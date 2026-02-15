@@ -36,6 +36,8 @@ wss.on('connection', (ws) => {
   // welcome packet + existing players
   ws.send(JSON.stringify({ type: 'welcome', id, players: Array.from(clients.values()) }));
   broadcast({ type: 'join', player: state }, ws);
+  // also send a chat-style notification
+  broadcast({ type: 'chat', name: 'Server', text: `${state.name} connected` }, ws);
 
   ws.on('message', (data) => {
     try {
@@ -62,21 +64,31 @@ wss.on('connection', (ws) => {
             blockType: msg.blockType
           }, ws);
           break;
-        default:
+        case 'chat':
+          // relay chat message to everyone else (include sender info)
+          broadcast({
+            type: 'chat',
+            id: st.id,
+            name: st.name,
+            text: msg.text
+          }, ws);
           break;
       }
     } catch (e) {
-      // ignore malformed
+      console.error('failed parsing message', e);
     }
   });
 
   ws.on('close', () => {
     const st = clients.get(ws);
     clients.delete(ws);
-    if (st) broadcast({ type: 'leave', id: st.id });
+    if (st) {
+      broadcast({ type: 'leave', id: st.id });
+      broadcast({ type: 'chat', name: 'Server', text: `${st.name} disconnected` });
+    }
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`HTTP + WebSocket server listening on port ${PORT}`);
+  console.log(`Server listening on port ${PORT}`);
 });

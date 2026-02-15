@@ -4168,6 +4168,10 @@ class Game {
         this.isMultiplayer = !!isMultiplayer;
         this.team = team === 'blue' ? 'blue' : 'red';
         this.mesher = null; // Will be created after texture loads
+        // chat state
+        this.chatLogEl = null;
+        this.chatInputEl = null;
+        this.chatActive = false;
         this.player = new Player(survivalMode);
         this.player.gameInstance = this; // Reference to game for curse effects
         // weapon visuals bookkeeping
@@ -4279,6 +4283,9 @@ class Game {
         console.log('Setting up input...');
         this.setupInput();
         
+        // Chat UI (must be created after input so slash key works)
+        this.createChatUI();
+        
         // Initialize hotbar based on game mode
         this.initializeHotbar();
         
@@ -4340,12 +4347,16 @@ class Game {
                             break;
                         case 'join':
                             if (msg.player && !this.remotePlayers.has(msg.player.id)) {
+                                this.addChatMessage(`${msg.player.name} connected`);
                                 this.remotePlayers.set(msg.player.id, msg.player);
                                 this.createRemotePlayerModel(msg.player);
                             }
                             break;
                         case 'leave':
                             if (msg.id) {
+                                const p = this.remotePlayers.get(msg.id);
+                                const name = p ? p.name : `Player${msg.id}`;
+                                this.addChatMessage(`${name} disconnected`);
                                 this.remotePlayers.delete(msg.id);
                                 this.removeRemotePlayerModel(msg.id);
                             }
@@ -4367,6 +4378,11 @@ class Game {
                                 // Update adjacent chunks if on edge
                                 if (msg.x % this.world.chunkSize === 0) this.updateChunkMesh(cx - 1, cz);
                                 if (msg.z % this.world.chunkSize === 0) this.updateChunkMesh(cx, cz - 1);
+                            }
+                            break;
+                        case 'chat':
+                            if (msg.name && msg.text) {
+                                this.addChatMessage(`${msg.name}: ${msg.text}`);
                             }
                             break;
                         default:
@@ -5380,6 +5396,20 @@ class Game {
     setupInput() {
         // Keyboard
         document.addEventListener('keydown', (e) => {
+            // If chat input currently active we let the input element handle keys
+            if (this.chatActive) return;
+
+            // Open chat with slash key
+            if (e.key === '/') {
+                e.preventDefault();
+                if (this.chatInputEl) {
+                    this.chatInputEl.style.display = 'block';
+                    this.chatInputEl.focus();
+                    this.chatActive = true;
+                }
+                return;
+            }
+
             // Toggle fairia dimension with F7
             if (e.key === 'F7') {
                 e.preventDefault();
@@ -8615,6 +8645,73 @@ class Game {
                 if (el && document.body.contains(el) && typeof el.requestPointerLock === 'function') el.requestPointerLock();
             } catch (e) {}
         }
+    }
+
+    createChatUI() {
+        if (this.chatLogEl) return;
+
+        // log container
+        const log = document.createElement('div');
+        log.id = 'chat-log';
+        log.style.position = 'absolute';
+        log.style.bottom = '60px';
+        log.style.left = '20px';
+        log.style.width = '300px';
+        log.style.maxHeight = '200px';
+        log.style.overflowY = 'auto';
+        log.style.background = 'rgba(0,0,0,0.5)';
+        log.style.color = '#fff';
+        log.style.fontFamily = 'Arial, sans-serif';
+        log.style.fontSize = '12px';
+        log.style.padding = '4px';
+        log.style.zIndex = '200';
+        document.body.appendChild(log);
+        this.chatLogEl = log;
+
+        // input field hidden initially
+        const input = document.createElement('input');
+        input.id = 'chat-input';
+        input.type = 'text';
+        input.style.position = 'absolute';
+        input.style.bottom = '20px';
+        input.style.left = '20px';
+        input.style.width = '300px';
+        input.style.display = 'none';
+        input.style.padding = '6px';
+        input.style.fontFamily = 'Arial, sans-serif';
+        input.style.fontSize = '14px';
+        input.style.zIndex = '200';
+        document.body.appendChild(input);
+        this.chatInputEl = input;
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const text = input.value.trim();
+                if (text) {
+                    if (this.ws && this.ws.readyState === 1) {
+                        this.ws.send(JSON.stringify({ type: 'chat', text }));
+                    }
+                    this.addChatMessage(`${this.playerName}: ${text}`);
+                }
+                input.value = '';
+                input.style.display = 'none';
+                this.chatActive = false;
+                e.preventDefault();
+            } else if (e.key === 'Escape') {
+                input.value = '';
+                input.style.display = 'none';
+                this.chatActive = false;
+                e.preventDefault();
+            }
+        });
+    }
+
+    addChatMessage(msg) {
+        if (!this.chatLogEl) return;
+        const line = document.createElement('div');
+        line.textContent = msg;
+        this.chatLogEl.appendChild(line);
+        this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight;
     }
 
     createHealthBar() {
