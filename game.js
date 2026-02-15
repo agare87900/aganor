@@ -5396,8 +5396,17 @@ class Game {
     setupInput() {
         // Keyboard
         document.addEventListener('keydown', (e) => {
-            // If chat input currently active we let the input element handle keys
-            if (this.chatActive) return;
+            // If chat input currently active we handle only slash to close it
+            if (this.chatActive) {
+                if (e.key === '/') {
+                    e.preventDefault();
+                    if (this.chatInputEl) {
+                        this.chatInputEl.style.display = 'none';
+                    }
+                    this.chatActive = false;
+                }
+                return;
+            }
 
             // Open chat with slash key
             if (e.key === '/') {
