@@ -286,28 +286,6 @@
     </script>
 </body>
 </html>
-
-<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-<script>
-const socket = io("http://localhost:3000");
-
-let players = {};
-
-// Receive current players
-socket.on('currentPlayers', (serverPlayers) => {
-    players = serverPlayers;
-    renderPlayers();
-});
-
-// New player joined
-socket.on('newPlayer', (player) => {
-    players[player.id] = player;
-    renderPlayers();
-});
-
-// Player moved
-socket.on('playerMoved', (player) => {
-    if (players[player.id]) {
         players[player.id] = player;
         renderPlayers();
     }

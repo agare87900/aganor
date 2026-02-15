@@ -893,6 +893,37 @@ class VoxelWorld {
         return blockType > 0 && blockType !== 5 && blockType !== 34 && blockType !== 11 && blockType !== 25 && blockType !== 29;
     }
 
+    /**
+     * Return true if the given block type represents something the player
+     * should be able to place in the world.  The inventory contains both
+     * blocks and "items" (scrolls, food, equipment, etc), and previously
+     * every item could be selected and then placed by right‑clicking.  That
+     * allowed the player to drop pork, helmets, scrolls etc as a solid block
+     * which is not desirable.  This helper centralises the decision and is
+     * used by {@link placeBlock}.  The list is kept in a set so it is easy to
+     * review and extend as new blocks are added.
+     */
+    isBlockPlaceable(blockType) {
+        if (typeof blockType !== 'number' || blockType <= 0) return false;
+        // valid placeable types (terrain, functional blocks, torches, chests,
+        // ores, lava, etc).  Any type not listed here is considered an "item"
+        // and will be ignored when the player attempts to place it.
+        const placeable = new Set([
+            1, 2, 3, 4,    // dirt, grass, stone, sand
+            5,              // water (bucket behaviour may vary)
+            6, 7, 8, 9, 10, // wood, bricks, ruby, clay, snow
+            11, 12, 13,     // leafs, sapphire, plank
+            24,             // coal ore/block
+            25,             // torch
+            26,             // chest
+            27,             // mana orb (placeable block)
+            29,             // magic candle
+            33,             // grim stone (fairia)
+            34              // lava
+        ]);
+        return placeable.has(blockType);
+    }
+
     getVisibleBlocksInChunk(cx, cz) {
         const chunk = this.getChunk(cx, cz);
         const visibleBlocks = [];
@@ -2747,6 +2778,255 @@ class PigmanPriest {
     }
 }
 
+
+// Simple teal slime creature with grey eyes
+class Slime {
+    constructor(position = new THREE.Vector3(), survivalMode = false, gameInstance = null) {
+        this.position = position.clone();
+        this.game = gameInstance;
+        this.yaw = 0;
+        this.speed = 0.05; // slow
+        this.velocity = new THREE.Vector3(0, 0, 0);
+        this.gravity = 0.01;
+        this.size = { halfX: 0.4, halfY: 0.4, halfZ: 0.4 };
+        this.onGround = false;
+        this.jumpPower = 0.25;
+        this.jumpCooldown = 1000;
+        this.lastJumpTime = 0;
+        this.mesh = null;
+        
+        // Survival mode
+        this.survivalMode = survivalMode;
+        this.maxHealth = 8;
+        this.health = 8;
+        this.isDead = false;
+        this.attackDamage = 0; // passive
+        this.attackCooldown = 1000;
+        this.lastAttackTime = 0;
+        this.isAggressive = false;
+        this.wanderDir = new THREE.Vector3(0, 0, 0);
+        this.nextWanderChange = 0;
+        this.wanderSpeed = 0.02;
+        
+        // Damage flash
+        this.damageFlashUntil = 0;
+    }
+
+    createMesh() {
+        const group = new THREE.Group();
+
+        const bodyMat = new THREE.MeshLambertMaterial({
+            color: 0x00ffff,
+            transparent: true,
+            opacity: 0.5
+        });
+        const eyeMat = new THREE.MeshLambertMaterial({ color: 0x888888 });
+
+        const bodyGeo = new THREE.SphereGeometry(0.4, 16, 16);
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        body.castShadow = true;
+        group.add(body);
+
+        const eyeGeo = new THREE.SphereGeometry(0.1, 8, 8);
+        const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
+        leftEye.position.set(-0.15, 0.1, 0.36);
+        leftEye.castShadow = true;
+        group.add(leftEye);
+
+        const rightEye = new THREE.Mesh(eyeGeo, eyeMat);
+        rightEye.position.set(0.15, 0.1, 0.36);
+        rightEye.castShadow = true;
+        group.add(rightEye);
+
+        group.position.copy(this.position);
+        this.mesh = group;
+        return group;
+    }
+
+    update(world, targetPlayer, deltaTime) {
+        if (!world) return;
+        const now = performance.now ? performance.now() : Date.now();
+        const { halfX, halfY, halfZ } = this.size;
+
+        const checkGround = () => {
+            const sampleOffsets = [0, -0.25, 0.25];
+            const feetY = this.position.y - halfY;
+            let highestTop = -Infinity;
+
+            for (const ox of sampleOffsets) {
+                for (const oz of sampleOffsets) {
+                    const bx = Math.floor(this.position.x + ox);
+                    const bz = Math.floor(this.position.z + oz);
+                    const by = Math.floor(feetY - 0.05);
+                    if (!world.isBlockSolid(world.getBlock(bx, by, bz))) continue;
+                    const top = by + 1;
+                    if (top > highestTop) highestTop = top;
+                }
+            }
+
+            if (highestTop !== -Infinity) {
+                const gap = highestTop - feetY;
+                if (gap >= -0.08 && gap <= 0.25) {
+                    this.position.y = highestTop + halfY + 0.001;
+                    this.velocity.y = Math.max(this.velocity.y, 0);
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        this.onGround = checkGround();
+        if (!this.onGround) {
+            this.velocity.y -= this.gravity;
+        }
+
+        // Wander direction update
+        if (now >= this.nextWanderChange) {
+            if (Math.random() < 0.3) {
+                this.wanderDir.set(0, 0, 0);
+            } else {
+                const angle = Math.random() * Math.PI * 2;
+                this.wanderDir.set(Math.sin(angle), 0, Math.cos(angle));
+            }
+            this.nextWanderChange = now + 2000 + Math.random() * 2000;
+        }
+
+        const dist = this.wanderDir.length();
+        if (dist > 0.05) {
+            this.wanderDir.normalize();
+            const step = this.wanderSpeed * Math.max(deltaTime * 60, 1);
+            this.velocity.x = this.wanderDir.x * step;
+            this.velocity.z = this.wanderDir.z * step;
+            this.yaw = Math.atan2(this.wanderDir.x, this.wanderDir.z);
+        } else {
+            this.velocity.x *= 0.6;
+            this.velocity.z *= 0.6;
+        }
+
+        // Simple hop over obstacles
+        if (this.onGround && dist > 0.05) {
+            const lookX = Math.sin(this.yaw) * 0.6;
+            const lookZ = Math.cos(this.yaw) * 0.6;
+            const feetY = this.position.y - halfY;
+            const floorY = Math.floor(feetY);
+            const bx = Math.floor(this.position.x + lookX);
+            const bz = Math.floor(this.position.z + lookZ);
+            const blockInFront = world.getBlock(bx, floorY, bz);
+            const blockAbove = world.getBlock(bx, floorY + 1, bz);
+            if (world.isBlockSolid(blockInFront) && !world.isBlockSolid(blockAbove)) {
+                if (now - this.lastJumpTime >= this.jumpCooldown) {
+                    this.velocity.y = this.jumpPower;
+                    this.lastJumpTime = now;
+                }
+            }
+        }
+
+        // Collision helper
+        const isSolidAt = (pos) => world.isBlockSolid(world.getBlock(Math.floor(pos[0]), Math.floor(pos[1]), Math.floor(pos[2])));
+        const hasCollision = (pos) => {
+            const pts = [
+                [pos.x - halfX, pos.y - halfY, pos.z - halfZ],
+                [pos.x + halfX, pos.y - halfY, pos.z - halfZ],
+                [pos.x - halfX, pos.y + halfY, pos.z - halfZ],
+                [pos.x + halfX, pos.y + halfY, pos.z - halfZ],
+                [pos.x - halfX, pos.y - halfY, pos.z + halfZ],
+                [pos.x + halfX, pos.y - halfY, pos.z + halfZ],
+                [pos.x - halfX, pos.y + halfY, pos.z + halfZ],
+                [pos.x + halfX, pos.y + halfY, pos.z + halfZ]
+            ];
+            for (const p of pts) if (isSolidAt(p)) return true;
+            return false;
+        };
+
+        let nextPos = this.position.clone();
+        // X
+        nextPos.x += this.velocity.x;
+        if (!hasCollision(nextPos)) {
+            this.position.x = nextPos.x;
+        } else {
+            this.velocity.x = 0;
+        }
+        // Z
+        nextPos.z = this.position.z + this.velocity.z;
+        nextPos.x = this.position.x;
+        if (!hasCollision(nextPos)) {
+            this.position.z = nextPos.z;
+        } else {
+            this.velocity.z = 0;
+        }
+        // Y
+        nextPos.y = this.position.y + this.velocity.y;
+        nextPos.x = this.position.x;
+        nextPos.z = this.position.z;
+        let landed = false;
+        if (!hasCollision(nextPos)) {
+            this.position.y = nextPos.y;
+        } else {
+            if (this.velocity.y < 0) {
+                const feetY = this.position.y - halfY;
+                const by = Math.floor(feetY - 0.01);
+                const bx = Math.floor(this.position.x);
+                const bz = Math.floor(this.position.z);
+                if (world.isBlockSolid(world.getBlock(bx, by, bz))) {
+                    this.position.y = by + 1 + halfY + 0.001;
+                }
+                landed = true;
+            }
+            this.velocity.y = 0;
+        }
+        this.onGround = landed || checkGround();
+
+        // Damage flash
+        if (now < this.damageFlashUntil && this.mesh) {
+            this.mesh.traverse(child => {
+                if (child.isMesh && child.material) {
+                    child.material.emissive.setHex(0xff0000);
+                    child.material.emissiveIntensity = 0.8;
+                }
+            });
+        } else if (this.damageFlashUntil > 0) {
+            if (this.mesh) {
+                this.mesh.traverse(child => {
+                    if (child.isMesh && child.material) {
+                        child.material.emissive.setHex(0x000000);
+                        child.material.emissiveIntensity = 0;
+                    }
+                });
+            }
+            this.damageFlashUntil = 0;
+        }
+
+        if (this.mesh) {
+            this.mesh.position.set(this.position.x, this.position.y, this.position.z);
+            this.mesh.rotation.y = this.yaw;
+        }
+    }
+
+    takeDamage(amount, knockbackDir = null) {
+        if (!this.survivalMode || this.isDead) return false;
+        this.health = Math.max(0, this.health - amount);
+        const now = performance.now ? performance.now() : Date.now();
+        this.damageFlashUntil = now + 200;
+        if (knockbackDir) {
+            const kb = 0.2;
+            this.velocity.x = knockbackDir.x * kb;
+            this.velocity.z = knockbackDir.z * kb;
+            this.velocity.y = 0.15;
+        }
+        if (this.health <= 0) {
+            this.isDead = true;
+            // drop slime item
+            if (this.game && this.game.itemManager) {
+                const dropPos = this.position.clone();
+                dropPos.y += 0.5;
+                this.game.itemManager.dropItem(dropPos, this.game.SLIME_TYPE, 1);
+            }
+            return true;
+        }
+        return false;
+    }
+}
+
 class Minutor {
     constructor(position = new THREE.Vector3(), survivalMode = false) {
         this.position = position.clone();
@@ -3337,6 +3617,7 @@ class DroppedItem {
         this.bobOffset = Math.random() * Math.PI * 2; // Random bob phase
     }
 
+
     createSprite(textureAtlas, blockNames, itemTexture) {
         // Create a 2D sprite for the dropped item using individual PNG texture
         const canvas = document.createElement('canvas');
@@ -3480,6 +3761,91 @@ class DroppedItem {
     }
 }
 
+// Simple projectile used by the musket.  Behaves as a small block that travels
+// straight and damages the first entity it hits.  It is managed by the Game
+// instance via the `projectiles` array.
+class Projectile {
+    constructor(position, direction, speed, damage, owner) {
+        this.position = position.clone();
+        this.velocity = direction.clone().normalize().multiplyScalar(speed);
+        this.damage = damage;
+        this.owner = owner;
+        this.mesh = null;
+        this.lifetime = 0;
+        this.maxLifetime = 5; // seconds before disappearing
+        this.createMesh();
+    }
+
+    createMesh() {
+        const geom = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+        const mat = new THREE.MeshBasicMaterial({ color: 0xaaaaaa });
+        this.mesh = new THREE.Mesh(geom, mat);
+        this.mesh.position.copy(this.position);
+        // simple lighting hack so bullet is visible
+        this.mesh.castShadow = false;
+        if (window.game && game.scene) {
+            try { game.scene.add(this.mesh); } catch (e) {}
+        }
+    }
+
+    update(deltaTime, game) {
+        this.lifetime += deltaTime;
+        if (this.lifetime > this.maxLifetime) {
+            this.destroy(game);
+            return false;
+        }
+
+        const move = this.velocity.clone().multiplyScalar(deltaTime * 60);
+        this.position.add(move);
+        if (this.mesh) this.mesh.position.copy(this.position);
+
+        // world collision
+        const x = Math.floor(this.position.x);
+        const y = Math.floor(this.position.y);
+        const z = Math.floor(this.position.z);
+        const block = game.world.getBlock(x, y, z);
+        if (block !== 0) {
+            this.destroy(game);
+            return false;
+        }
+
+        // entity collision (pigmen, priests, minutors)
+        const hits = [];
+        if (game.pigmen && game.pigmen.length) hits.push(...game.pigmen);
+        if (game.pigmanPriest && !game.pigmanPriest.isDead) hits.push(game.pigmanPriest);
+        if (game.minutors && game.minutors.length) hits.push(...game.minutors);
+        if (game.slimes && game.slimes.length) hits.push(...game.slimes);
+        for (const ent of hits) {
+            if (!ent || ent.isDead) continue;
+            const distSq = this.position.distanceToSquared(ent.position);
+            // give a bit more forgiveness vs. tiny hitbox
+            if (distSq < 0.7 * 0.7) {
+                if (ent.takeDamage) ent.takeDamage(this.damage, this.owner);
+                this.destroy(game);
+                return false;
+            }
+        }
+        // multiplayer other player
+        if (game.isMultiplayer && game.otherPlayer && !game.otherPlayer.isDead) {
+            const distSq = this.position.distanceToSquared(game.otherPlayer.position);
+            if (distSq < 0.7 * 0.7) {
+                if (game.otherPlayer.takeDamage) game.otherPlayer.takeDamage(this.damage, this.owner);
+                this.destroy(game);
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    destroy(game) {
+        if (this.mesh) {
+            try { game.scene.remove(this.mesh); } catch (e) {}
+            this.mesh = null;
+        }
+    }
+}
+
 class ItemManager {
     constructor(scene, world, textureAtlas, blockNames) {
         this.scene = scene;
@@ -3491,7 +3857,8 @@ class ItemManager {
         
         // Load individual item textures (item_1.png, item_2.png, etc.)
         const textureLoader = new THREE.TextureLoader();
-        for (let i = 1; i <= 25; i++) {
+        // load textures for known item blocks; musket is 37 so extend range a bit
+        for (let i = 1; i <= 40; i++) {
             textureLoader.load(
                 `item_${i}.png`,
                 (texture) => {
@@ -3610,8 +3977,22 @@ class Game {
         setTimeout(() => {
             this.gameMusic.play().catch(e => console.log('Game music play failed:', e));
         }, 5000);
+
+        // Sound effects
+        this.musketSound = new Audio('musket.mp3');
+        this.musketSound.volume = 0.7; // a bit louder than UI clicks
+
         
         // Block type to name mapping
+        // --- item/block type constants ---
+        // NB: IDs above 36 are not currently defined elsewhere, but we
+        // reserve 37 for the new musket.  Because musket behaves as an item
+        // (not normally placed as terrain) we don't explicitly rely on it
+        // being in the placeable set, but we do allow it there so creative
+        // users can obtain it via the block picker.
+        const MUSKET_TYPE = 37;
+        const SLIME_TYPE = 38;
+
         this.blockNames = {
             0: 'Air',
             1: 'Dirt',
@@ -3649,8 +4030,14 @@ class Game {
             33: 'Grim Stone',
             34: 'Lava',
             35: 'Smiteth Scroll',
-            36: 'Gloom'
+            36: 'Gloom',
+            [MUSKET_TYPE]: 'Musket',  // new weapon
+            [SLIME_TYPE]: 'Slime'    // dropped by slain slimes
         };
+
+        // push constants onto game instance so other methods can refer to them
+        this.MUSKET_TYPE = MUSKET_TYPE;
+        this.SLIME_TYPE = SLIME_TYPE;
         
         // Lair system - hierarchical organization of items
         this.lairs = {
@@ -3694,10 +4081,41 @@ class Game {
         console.log('Canvas container dimensions:', container ? (container.clientWidth + 'x' + container.clientHeight) : 'not found');
         console.log('Window dimensions:', window.innerWidth, 'x', window.innerHeight);
         
-        this.renderer = new THREE.WebGLRenderer({ antialias: true, failIfMajorPerformanceCaveat: false });
+        // Attempt to create a WebGL2 renderer first; some GPUs/drivers throw when compiling
+        // the depth/shadow shaders.  If a compile error occurs, fall back to WebGL1.
+        let useWebGL1 = false;
+        const rendererOptions = { antialias: true, failIfMajorPerformanceCaveat: false };
+        try {
+            this.renderer = new THREE.WebGLRenderer(rendererOptions);
+            if (this.renderer.capabilities.isWebGL2) {
+                // create a tiny mesh with depth material to force a compile
+                const testMat = new THREE.MeshDepthMaterial();
+                const testGeo = new THREE.BufferGeometry();
+                testGeo.setAttribute('position', new THREE.Float32BufferAttribute([0,0,0], 3));
+                const testMesh = new THREE.Mesh(testGeo, testMat);
+                const testScene = new THREE.Scene();
+                testScene.add(testMesh);
+                const testCam = new THREE.PerspectiveCamera();
+                // render to offscreen to trigger shader compilation
+                this.renderer.render(testScene, testCam);
+            }
+        } catch (err) {
+            console.warn('WebGL2 initialization failed, falling back to WebGL1:', err);
+            useWebGL1 = true;
+        }
+        if (useWebGL1) {
+            this.renderer = new THREE.WebGL1Renderer(rendererOptions);
+        }
+
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.setPixelRatio(window.devicePixelRatio);
-        this.renderer.shadowMap.enabled = true;
+        // enable shadows only if the context successfully compiled earlier
+        try {
+            this.renderer.shadowMap.enabled = true;
+        } catch (e) {
+            console.warn('Failed to enable shadow maps, disabling them.', e);
+            this.renderer.shadowMap.enabled = false;
+        }
         
         console.log('Container element:', container);
         
@@ -3752,6 +4170,13 @@ class Game {
         this.mesher = null; // Will be created after texture loads
         this.player = new Player(survivalMode);
         this.player.gameInstance = this; // Reference to game for curse effects
+        // weapon visuals bookkeeping
+        this.currentHandWeaponType = null;
+        this.currentPlayerWeaponType = null;
+        this.otherPlayerWeaponType = null;
+        this.handWeaponMesh = null;
+        this.playerModelWeapon = null;
+        this.otherPlayerWeaponMesh = null;
         // All players spawn at same location (0, 70, 0) when on server
         this.player.position.set(0, 70, 0);
 
@@ -3766,9 +4191,12 @@ class Game {
 
         // Hostile mobs
         this.pigmen = [];
-        // Force-spawn pigmen nearby to guarantee they appear
+        this.slimes = []; // teal transparent mobs with grey eyes
+        // Active projectiles fired by muskets (or other future weapons)
+        this.projectiles = [];
+        // Force-spawn pigmen (and slimes) nearby to guarantee they appear
         setTimeout(() => {
-            console.log('[Init] Force-spawning pigmen after world ready...');
+            console.log('[Init] Force-spawning pigmen and slimes after world ready...');
             console.log('[Init] Scene exists:', !!this.scene, 'Player pos:', this.player.position.x, this.player.position.y, this.player.position.z);
             
             if (!this.scene) {
@@ -3783,11 +4211,21 @@ class Game {
                 const py = this.player.position.y;
                 const pz = this.player.position.z + Math.sin(angle) * radius;
                 
-                console.log(`[Init] Attempting spawn ${i + 1} at (${px.toFixed(1)}, ${py.toFixed(1)}, ${pz.toFixed(1)})`);
+                console.log(`[Init] Attempting pigman spawn ${i + 1} at (${px.toFixed(1)}, ${py.toFixed(1)}, ${pz.toFixed(1)})`);
                 const pig = this.spawnPigmanAtExact(px, py, pz);
-                console.log(`[Init] Spawn ${i + 1} result:`, pig ? 'SUCCESS' : 'FAILED');
+                console.log(`[Init] Pigman spawn ${i + 1} result:`, pig ? 'SUCCESS' : 'FAILED');
+
+                // also spawn a slime nearby for variety
+                const sangle = Math.random() * Math.PI * 2;
+                const sradius = 5 + Math.random() * 3;
+                const sx = this.player.position.x + Math.cos(sangle) * sradius;
+                const sy = py;
+                const sz = this.player.position.z + Math.sin(sangle) * sradius;
+                console.log(`[Init] Attempting slime spawn ${i + 1} at (${sx.toFixed(1)}, ${sy.toFixed(1)}, ${sz.toFixed(1)})`);
+                const slime = this.spawnSlimeAtExact ? this.spawnSlimeAtExact(sx, sy, sz) : null;
+                console.log(`[Init] Slime spawn ${i + 1} result:`, slime ? 'SUCCESS' : 'FAILED');
             }
-            console.log(`[Init] Total pigmen after force-spawn: ${this.pigmen.length}`);
+            console.log(`[Init] Total pigmen after force-spawn: ${this.pigmen.length}, slimes: ${this.slimes.length}`);
         }, 1500);
         this.pigmanPriest = null; // Boss mob
         this.minutors = [];
@@ -4201,6 +4639,93 @@ class Game {
         
         // Add to camera so it moves with view
         this.camera.add(this.handBlock);
+    }
+
+    // create simple geometries for weapons (sword or shield)
+    createWeaponMesh(type) {
+        const g = new THREE.Group();
+        if (type === 22 || type === 32) {
+            // sword blade
+            const bladeLength = 0.6;
+            const bladeGeo = new THREE.BoxGeometry(0.05, bladeLength, 0.02);
+            const bladeColor = type === 22 ? 0x708090 : 0xFFD700;
+            const bladeMat = new THREE.MeshLambertMaterial({ color: bladeColor });
+            const blade = new THREE.Mesh(bladeGeo, bladeMat);
+            blade.position.set(0, -bladeLength/2, 0);
+            g.add(blade);
+            // handle
+            const handleGeo = new THREE.BoxGeometry(0.06, 0.15, 0.06);
+            const handleMat = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+            const handle = new THREE.Mesh(handleGeo, handleMat);
+            handle.position.set(0, 0.025, 0);
+            g.add(handle);
+        } else if (type === 23) {
+            // wood shield is square-ish
+            const shieldGeo = new THREE.BoxGeometry(0.4, 0.4, 0.05);
+            const shieldMat = new THREE.MeshLambertMaterial({ color: 0xDEB887 });
+            const shield = new THREE.Mesh(shieldGeo, shieldMat);
+            g.add(shield);
+        } else if (type === this.MUSKET_TYPE) {
+            // musket: long barrel with small stock
+            const barrelGeo = new THREE.BoxGeometry(0.05, 0.05, 0.8);
+            const barrelMat = new THREE.MeshLambertMaterial({ color: 0x333333 });
+            const barrel = new THREE.Mesh(barrelGeo, barrelMat);
+            barrel.position.set(0, 0, -0.4);
+            g.add(barrel);
+            const stockGeo = new THREE.BoxGeometry(0.08, 0.05, 0.2);
+            const stockMat = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+            const stock = new THREE.Mesh(stockGeo, stockMat);
+            stock.position.set(0, 0, 0.2);
+            g.add(stock);
+        }
+        return g;
+    }
+
+    updateHandItem() {
+        const equipped = this.player && this.player.equipment ? this.player.equipment.mainHand : 0;
+        const type = (equipped && typeof equipped === 'object') ? equipped.type : equipped;
+
+        if (type !== this.currentHandWeaponType) {
+            // rebuild
+            if (this.handWeaponMesh && this.camera) {
+                this.camera.remove(this.handWeaponMesh);
+                this.handWeaponMesh = null;
+            }
+            if (type === 22 || type === 32 || type === 23 || type === this.MUSKET_TYPE) {
+                this.handWeaponMesh = this.createWeaponMesh(type);
+                // position a little left/center for fists effect
+                this.handWeaponMesh.position.set(0.4, -0.4, -1);
+                this.handWeaponMesh.rotation.set(0.2, 0, 0);
+                if (this.camera) this.camera.add(this.handWeaponMesh);
+            }
+            this.currentHandWeaponType = type;
+        }
+        // hide block cube when weapon present
+        if (this.handBlock) {
+            this.handBlock.visible = !(type === 22 || type === 32 || type === 23);
+        }
+    }
+
+    updatePlayerWeaponModel() {
+        if (!this.playerModel) return;
+        const equipped = this.player && this.player.equipment ? this.player.equipment.mainHand : 0;
+        const type = (equipped && typeof equipped === 'object') ? equipped.type : equipped;
+        if (type !== this.currentPlayerWeaponType) {
+            // remove old weapon
+            if (this.playerModelWeapon) {
+                this.playerModel.remove(this.playerModelWeapon);
+                this.playerModelWeapon = null;
+            }
+            if (type === 22 || type === 32 || type === 23 || type === this.MUSKET_TYPE) {
+                this.playerModelWeapon = this.createWeaponMesh(type);
+                // position roughly at right side of torso
+                this.playerModelWeapon.position.set(0.4, 0.0, 0.1);
+                // rotate to point forward
+                this.playerModelWeapon.rotation.y = -Math.PI/2;
+                this.playerModel.add(this.playerModelWeapon);
+            }
+            this.currentPlayerWeaponType = type;
+        }
     }
 
     updateHandBlock() {
@@ -4744,6 +5269,66 @@ class Game {
         if (mesh) this.scene.add(mesh);
         this.minutors.push(minutor);
         return minutor;
+    }
+
+    // --------------------------------------------------
+    // Slime spawning / updating helpers
+    spawnSlimeAt(x, z) {
+        if (!this.world) return null;
+        let surfaceY = this.world.getTerrainHeight(Math.floor(x), Math.floor(z));
+        if (surfaceY < this.world.waterLevel - 1) {
+            surfaceY = this.world.waterLevel + 1;
+        }
+        const pos = new THREE.Vector3(x + 0.5, surfaceY + 0.8, z + 0.5);
+        const slime = new Slime(pos, this.survivalMode, this);
+        const mesh = slime.createMesh();
+        if (mesh) this.scene.add(mesh);
+        this.slimes.push(slime);
+        return slime;
+    }
+
+    spawnSlimeAtExact(x, y, z) {
+        if (!this.scene) return null;
+        const pos = new THREE.Vector3(x, y, z);
+        const slime = new Slime(pos, this.survivalMode, this);
+        const mesh = slime.createMesh();
+        if (mesh) this.scene.add(mesh);
+        this.slimes.push(slime);
+        return slime;
+    }
+
+    spawnSlimes(count = 2) {
+        if (!this.world || !this.scene) return;
+        const radius = Math.max(8, (this.renderDistance * this.world.chunkSize) - 4);
+        for (let i = 0; i < count; i++) {
+            let spawned = false;
+            for (let attempt = 0; attempt < 20 && !spawned; attempt++) {
+                const angle = Math.random() * Math.PI * 2;
+                const r = Math.random() * radius * 0.8;
+                const rx = this.player.position.x + Math.cos(angle) * r;
+                const rz = this.player.position.z + Math.sin(angle) * r;
+                const sy = this.world.getTerrainHeight(Math.floor(rx), Math.floor(rz));
+                if (sy < 1) continue;
+                const s = this.spawnSlimeAtExact(rx, sy, rz);
+                if (s) spawned = true;
+            }
+        }
+        console.log(`[Spawn] Requested ${count} slimes; now have ${this.slimes.length}.`);
+    }
+
+    updateSlimes(deltaTime) {
+        if (!this.slimes || this.slimes.length === 0) return;
+        if (!this._slimesUpdateCounter) this._slimesUpdateCounter = 0;
+        this._slimesUpdateCounter++;
+        if (this._slimesUpdateCounter % 3 !== 0) return;
+        const start = performance.now();
+        for (const s of this.slimes) {
+            s.update(this.world, this.player, deltaTime * 3);
+        }
+        const elapsed = performance.now() - start;
+        if (elapsed > 50) {
+            console.warn(`[PERF] updateSlimes took ${elapsed.toFixed(2)}ms (${this.slimes.length} slimes)`);
+        }
     }
 
     spawnMinutors(count = 2) {
@@ -5442,8 +6027,8 @@ class Game {
             this.hotbarIndex = 0;
             this.player.selectedBlock = 0;
         } else {
-            // In creative mode: populate hotbar with common blocks
-            const blockTypes = [1, 2, 3, 4, 5, 6, 7, 8, 12];
+            // In creative mode: populate hotbar with common blocks (include musket as last slot)
+            const blockTypes = [1, 2, 3, 4, 5, 6, 7, 8, 12, this.MUSKET_TYPE];
             slots.forEach((slot, i) => {
                 if (i < blockTypes.length) {
                     const blockType = blockTypes[i];
@@ -5664,6 +6249,8 @@ class Game {
         
         let closestPigman = null;
         let closestDistance = attackRange;
+        let closestSlime = null;
+        let closestSlimeDistance = attackRange;
 
         // Find the closest pigman in front of the player
         for (const pig of this.pigmen) {
@@ -5682,6 +6269,22 @@ class Game {
             if (dot > 0.7 && distance < closestDistance) { // 0.7 = ~45 degree cone
                 closestPigman = pig;
                 closestDistance = distance;
+            }
+        }
+
+        // Also check slimes
+        for (const slime of this.slimes) {
+            if (slime.isDead) continue;
+
+            const toSlime = slime.position.clone().sub(camera.position);
+            const distance = toSlime.length();
+            if (distance > attackRange) continue;
+
+            toSlime.normalize();
+            const dot = direction.dot(toSlime);
+            if (dot > 0.7 && distance < closestSlimeDistance) {
+                closestSlime = slime;
+                closestSlimeDistance = distance;
             }
         }
 
@@ -5723,7 +6326,7 @@ class Game {
         }
 
         // Attack whichever is closer (prioritize boss)
-        if (closestPriest && (!closestMinutor || closestPriestDistance < closestMinutorDistance) && (!closestPigman || closestPriestDistance < closestDistance)) {
+        if (closestPriest && (!closestMinutor || closestPriestDistance < closestMinutorDistance) && (!closestPigman || closestPriestDistance < closestDistance) && (!closestSlime || closestPriestDistance < closestSlimeDistance)) {
             // Attack Pigman Priest Boss
             const knockbackDir = closestPriest.position.clone()
                 .sub(this.player.position)
@@ -5751,7 +6354,7 @@ class Game {
             return true;
         }
 
-        if (closestMinutor && (!closestPigman || closestMinutorDistance < closestDistance)) {
+        if (closestMinutor && (!closestPigman || closestMinutorDistance < closestDistance) && (!closestSlime || closestMinutorDistance < closestSlimeDistance)) {
             // Attack Minutor
             const knockbackDir = closestMinutor.position.clone()
                 .sub(this.player.position)
@@ -5795,6 +6398,11 @@ class Game {
                     dropPos.y += 0.5; // Drop slightly above ground
                     this.itemManager.dropItem(dropPos, 17, 3); // Drop 3 pork (type 17)
                     console.log('Pigman dropped 3 pork!');
+                    // small chance to drop a musket
+                    if (Math.random() < 0.05) {
+                        this.itemManager.dropItem(dropPos.clone().add(new THREE.Vector3(0.2,0,0)), this.MUSKET_TYPE, 1);
+                        console.log('Pigman also dropped a musket!');
+                    }
                 }
                 
                 // Remove dead pigman
@@ -5809,10 +6417,69 @@ class Game {
             return true; // Attack hit
         }
 
+        // if a slime is actually closer than all the others then hit it
+        if (closestSlime) {
+            const knockbackDir = closestSlime.position.clone()
+                .sub(this.player.position)
+                .normalize();
+            knockbackDir.y = 0;
+            const died = closestSlime.takeDamage(attackDamage, knockbackDir);
+            if (died) {
+                if (closestSlime.mesh) {
+                    this.scene.remove(closestSlime.mesh);
+                }
+                const idx = this.slimes.indexOf(closestSlime);
+                if (idx > -1) this.slimes.splice(idx, 1);
+            }
+            return true;
+        }
         return false; // No pigman hit
     }
 
+    // Convenience wrapper so Game consumers can query the world.
+    // `VoxelWorld` actually implements the logic; forward here to avoid
+    // errors when calling from within Game methods or UI code.
+    isBlockPlaceable(blockType) {
+        if (this.world && typeof this.world.isBlockPlaceable === 'function') {
+            return this.world.isBlockPlaceable(blockType);
+        }
+        return false;
+    }
+
+    // Fire the musket weapon if held; we don't perform block placement in
+    // that case.
+    shootMusket() {
+        if (!this.player) return;
+        // play firing sound (clone node so multiple shots can overlap)
+        if (this.musketSound) {
+            try {
+                const snd = this.musketSound.cloneNode();
+                snd.currentTime = 0;
+                snd.play().catch(e => console.log('Musket sound failed:', e));
+            } catch (e) {
+                console.log('Error playing musket sound:', e);
+            }
+        }
+
+        const camera = this.player.getCamera();
+        const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
+        const startPos = camera.position.clone().add(dir.clone().multiplyScalar(1));
+        const speed = 1.2;
+        const damage = 15;
+        const proj = new Projectile(startPos, dir, speed, damage, this.player);
+        // add mesh to our scene so it is rendered
+        if (proj.mesh && this.scene) {
+            this.scene.add(proj.mesh);
+        }
+        this.projectiles.push(proj);
+    }
+
     placeBlock() {
+        // musket override
+        if (this.player.selectedBlock === this.MUSKET_TYPE) {
+            this.shootMusket();
+            return;
+        }
         const hit = this.raycastBlock();
         if (hit) {
             // Open chest UI if clicking on a chest
@@ -5827,13 +6494,25 @@ class Game {
                 return;
             }
 
-            // Tools like Chisel are not placeable blocks
-            if (this.player.selectedBlock === 30) {
-                return;
-            }
-
-            // Cloud Pillow is an item, not a placeable block
-            if (this.player.selectedBlock === 31) {
+            // In survival mode we only allow a restricted set of block IDs to
+            // be placed; inventory contains many "items" (scrolls, food, tools)
+            // which shouldn't turn into world geometry.  The helper handles the
+            // decision and logs when the player attempts to put down something
+            // invalid.  For creative mode we bypass this filter entirely so the
+            // user can experiment freely – if they pick a non‑placeable item it
+            // will still attempt to be placed (it may render oddly, which is
+            // acceptable for a sandbox mode).
+            if (this.survivalMode && !this.world.isBlockPlaceable(this.player.selectedBlock)) {
+                // keeping the old tool/pillow checks for clarity/logging
+                if (this.player.selectedBlock === 30) {
+                    // chisel
+                    return;
+                }
+                if (this.player.selectedBlock === 31) {
+                    // cloud pillow
+                    return;
+                }
+                console.log(`Selected type ${this.player.selectedBlock} is not a placeable block`);
                 return;
             }
 
@@ -5848,13 +6527,25 @@ class Game {
                 let inventorySlot = -1;
                 
                 if (this.survivalMode) {
-                    // Find inventory slot with this block type
+                    // Find inventory slot with this block type.  We support both
+                    // the legacy numeric format (single block) and the newer
+                    // object format with type/amount so players can place the
+                    // starter items that are pre-filled in survival mode.
                     for (let i = 0; i < this.player.inventory.length; i++) {
                         const item = this.player.inventory[i];
-                        if (item && typeof item === 'object' && item.type === this.player.selectedBlock && item.amount > 0) {
-                            hasBlock = true;
-                            inventorySlot = i;
-                            break;
+                        if (!item) continue;
+                        if (typeof item === 'object') {
+                            if (item.type === this.player.selectedBlock && item.amount > 0) {
+                                hasBlock = true;
+                                inventorySlot = i;
+                                break;
+                            }
+                        } else if (typeof item === 'number') {
+                            if (item === this.player.selectedBlock) {
+                                hasBlock = true;
+                                inventorySlot = i;
+                                break;
+                            }
                         }
                     }
                     // Don't allow placing if inventory doesn't have the block
@@ -5875,8 +6566,13 @@ class Game {
                 // Consume block from inventory in survival mode
                 if (this.survivalMode && inventorySlot >= 0) {
                     const item = this.player.inventory[inventorySlot];
-                    item.amount--;
-                    if (item.amount <= 0) {
+                    if (typeof item === 'object') {
+                        item.amount--;
+                        if (item.amount <= 0) {
+                            this.player.inventory[inventorySlot] = 0;
+                        }
+                    } else {
+                        // legacy numeric slot -- placing one consumes it entirely
                         this.player.inventory[inventorySlot] = 0;
                     }
                     this.updateInventoryUI();
@@ -6386,7 +7082,9 @@ class Game {
                 { inputs: { 16: 1, 8: 1 }, result: 35, resultAmount: 1, name: '1 Scroll + 1 Ruby → 1 Smiteth Scroll' },
                 { inputs: { 1: 1, 27: 1 }, result: 36, resultAmount: 1, name: '1 Dirt + 1 Mana Orb → 1 Gloom' },
                 { inputs: { 3: 1, 13: 1 }, result: 30, resultAmount: 1, name: '1 Stone + 1 Plank → 1 Chisel' },
-                { inputs: { 1: 5 }, result: 31, resultAmount: 1, name: '5 Dirt → 1 Cloud Pillow' }
+                { inputs: { 1: 5 }, result: 31, resultAmount: 1, name: '5 Dirt → 1 Cloud Pillow' },
+                // musket recipe: 2 planks + 5 coal + 3 stone
+                { inputs: { 13: 2, 24: 5, 3: 3 }, result: this.MUSKET_TYPE, resultAmount: 1, name: '2 Planks + 5 Coal + 3 Stone → Musket' }
             ];
 
             // Create recipe list
@@ -7592,7 +8290,10 @@ class Game {
     }
 
     createCreativeMenu() {
-        if (this._creativeMenuEl) return;
+        // If we previously created the element but it was removed from the DOM
+        // (unlikely but possible), treat it as not existing so we recreate it.
+        if (this._creativeMenuEl && document.body.contains(this._creativeMenuEl)) return;
+        this._creativeMenuEl = null; // allow rebuild
 
         const menu = document.createElement('div');
         menu.id = 'creative-menu';
@@ -7624,10 +8325,16 @@ class Game {
         grid.style.gridGap = '8px';
         grid.style.marginBottom = '16px';
 
-        // Add all non-air entries from blockNames so new items (coal, torch, chest, mana orb, scroll, magic candle) show up automatically
+        // Add all non-air entries from blockNames so new items (coal, torch, chest, mana orb, magic candle, etc)
+        // show up automatically.  However only blocks the player can actually place
+        // are useful in the creative block picker – selecting an unplaceable item
+        // would lead to the "i can't place" confusion the player reported.  We
+        // still allow the game to give non-placeable items via other code (e.g.
+        // recipes) but the creative menu only shows block types that pass
+        // `isBlockPlaceable`.
         const blockTypes = Object.keys(this.blockNames)
             .map(Number)
-            .filter(t => t > 0)
+            .filter(t => t > 0 && (this.world.isBlockPlaceable(t) || t === this.MUSKET_TYPE))
             .sort((a, b) => a - b);
 
         blockTypes.forEach(blockType => {
@@ -7700,11 +8407,19 @@ class Game {
     }
 
     toggleCreativeMenu() {
-        if (this.survivalMode) return; // Don't allow in survival mode
+        if (this.survivalMode) {
+            console.log('Creative menu is disabled in survival mode.');
+            return; // Don't allow in survival mode
+        }
         this.createCreativeMenu();
+        if (!this._creativeMenuEl) {
+            console.warn('Failed to create creative menu element');
+            return;
+        }
         const open = this._creativeMenuEl.style.display !== 'block';
         this._creativeMenuEl.style.display = open ? 'block' : 'none';
         this.creativeMenuOpen = open;
+        console.log(open ? 'Creative menu opened' : 'Creative menu closed');
         if (open) {
             // Show mouse and close other menus if open
             if (this._inventoryEl && this._inventoryEl.style.display === 'block') {
@@ -7792,6 +8507,16 @@ class Game {
             if (!pig) console.log('Pigman spawn failed (invalid surface?)');
         }));
 
+        // Spawn Slime near player (use terrain height)
+        grid.appendChild(makeBtn('Spawn Slime (near player)', () => {
+            if (!this.world) return;
+            const px = this.player.position.x;
+            const pz = this.player.position.z;
+            const y = this.world.getTerrainHeight(Math.floor(px), Math.floor(pz));
+            const s = this.spawnSlimeAt(px, pz);
+            if (!s) console.log('Slime spawn failed');
+        }));
+
         // Spawn Minotaur near player (use terrain height)
         grid.appendChild(makeBtn('Spawn Minotaur (near player)', () => {
             if (!this.world) return;
@@ -7813,6 +8538,11 @@ class Game {
             if (this.pigmen && this.scene) {
                 this.pigmen.forEach(p => { if (p.mesh) this.scene.remove(p.mesh); });
                 this.pigmen = [];
+            }
+            // Remove slimes
+            if (this.slimes && this.scene) {
+                this.slimes.forEach(s => { if (s.mesh) this.scene.remove(s.mesh); });
+                this.slimes = [];
             }
             // Remove minutors
             if (this.minutors && this.scene) {
@@ -8900,6 +9630,7 @@ class Game {
             this.player.update(this.world, deltaTime);
             // Update hostile mobs
             this.updatePigmen(deltaTime);
+            this.updateSlimes(deltaTime);
             if (this.pigmanPriest && !this.pigmanPriest.isDead) {
                 this.pigmanPriest.update(this.world, this.player, deltaTime);
             }
@@ -8938,6 +9669,15 @@ class Game {
                     this.updateInventoryUI();
                 }
             }
+
+            // Update any active projectiles (bullets)
+            if (this.projectiles && this.projectiles.length) {
+                for (let i = this.projectiles.length - 1; i >= 0; i--) {
+                    const proj = this.projectiles[i];
+                    const keep = proj.update(deltaTime, this);
+                    if (!keep) this.projectiles.splice(i, 1);
+                }
+            }
             
             // Update visible chunks
             this.updateVisibleChunks();
@@ -8956,6 +9696,8 @@ class Game {
 
                 // Update hand block (rotating held block)
                 this.updateHandBlock();
+                // Update weapon mesh (first-person)
+                this.updateHandItem();
             } else {
                 // Third-person: orbit camera behind player using yaw for bearing and pitch for tilt
                 const headOffset = new THREE.Vector3(0, 1.5, 0);
@@ -8987,6 +9729,8 @@ class Game {
 
             // Update player model
             this.updatePlayerModel();
+            // Update visual weapons on third-person model
+            this.updatePlayerWeaponModel();
 
             // Animate cape if player has one
             if (this.playerCape) {
@@ -9017,6 +9761,23 @@ class Game {
                         child.lookAt(this.camera.position);
                     }
                 });
+                // if the bot has a weapon property use it (future enhancement)
+                if (this.otherPlayerWeaponType !== this.otherPlayer.equipment?.mainHand) {
+                    // recreate simplified weapon on other player
+                    if (this.otherPlayerWeaponMesh) {
+                        this.otherPlayerModel.remove(this.otherPlayerWeaponMesh);
+                        this.otherPlayerWeaponMesh = null;
+                    }
+                    const wt = this.otherPlayer.equipment ? this.otherPlayer.equipment.mainHand : 0;
+                    const ttype = (wt && typeof wt === 'object') ? wt.type : wt;
+                    if (ttype === 22 || ttype === 32 || ttype === 23) {
+                        this.otherPlayerWeaponMesh = this.createWeaponMesh(ttype);
+                        this.otherPlayerWeaponMesh.position.set(0.4, 0.0, 0.1);
+                        this.otherPlayerWeaponMesh.rotation.y = -Math.PI/2;
+                        this.otherPlayerModel.add(this.otherPlayerWeaponMesh);
+                    }
+                    this.otherPlayerWeaponType = ttype;
+                }
             }
 
             // Update remote player models from server
@@ -9229,7 +9990,7 @@ window.addEventListener('load', () => {
     menu.style.textAlign = 'center';
 
     const title = document.createElement('h1');
-    title.textContent = 'Voxel Placeholder';
+    title.textContent = '';
     title.style.color = '#fff';
     title.style.fontSize = '48px';
     title.style.marginBottom = '40px';
@@ -9567,7 +10328,7 @@ window.addEventListener('load', () => {
     serverList.style.marginTop = '8px';
     
     function renderSavedServers() {
-        serverList.innerHTML = '';
+        serverList.innerHTML = 'aganor';
         if (savedServers.length === 0) {
             const empty = document.createElement('div');
             empty.style.color = '#666';
