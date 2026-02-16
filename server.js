@@ -7,6 +7,8 @@ const path = require('path');
 const WebSocket = require('ws');
 
 const PORT = parseInt(process.argv[2], 10) || process.env.PORT || 3000;
+// allow specifying listening host/IP; default to all interfaces (0.0.0.0)
+const HOST = process.argv[3] || process.env.HOST || '0.0.0.0';
 
 const app = express();
 // serve everything in the workspace root (static files, images, etc.)
@@ -89,6 +91,6 @@ wss.on('connection', (ws) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Server listening on ${HOST}:${PORT}`);
 });
