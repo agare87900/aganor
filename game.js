@@ -10134,6 +10134,28 @@ window.addEventListener('load', () => {
         settingsContainer.style.display = 'block';
     });
     mainMenuContainer.appendChild(playBtn);
+
+    // Host Game button (quick host instructions)
+    const hostMenuBtn = document.createElement('button');
+    hostMenuBtn.textContent = 'Host Game';
+    hostMenuBtn.style.width = '250px';
+    hostMenuBtn.style.margin = '12px auto';
+    hostMenuBtn.style.padding = '15px';
+    hostMenuBtn.style.fontSize = '20px';
+    hostMenuBtn.style.background = '#ffaa00';
+    hostMenuBtn.style.color = '#000';
+    hostMenuBtn.style.border = 'none';
+    hostMenuBtn.style.borderRadius = '8px';
+    hostMenuBtn.style.cursor = 'pointer';
+    hostMenuBtn.style.display = 'block';
+    hostMenuBtn.addEventListener('click', () => {
+        const pw = prompt('Enter a password for your server (leave blank for none):') || '';
+        localStorage.setItem('serverPassword', pw);
+        alert(`To host a game, run the Node server on your machine with the same password.\n` +
+              `Example:\nnode server.js 3000 0.0.0.0 ${pw || '<no password>'}\n` +
+              `Then have your friend connect using that IP/port and password.`);
+    });
+    mainMenuContainer.appendChild(hostMenuBtn);
     
     // Settings button
     const settingsBtn = document.createElement('button');
@@ -10465,7 +10487,7 @@ window.addEventListener('load', () => {
     serverList.style.marginTop = '8px';
     
     function renderSavedServers() {
-        serverList.innerHTML = 'aganor';
+        serverList.innerHTML = '';
         if (savedServers.length === 0) {
             const empty = document.createElement('div');
             empty.style.color = '#666';
