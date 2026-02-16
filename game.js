@@ -4316,8 +4316,10 @@ class Game {
     }
 
     // Connect to an online WebSocket server
-    connectServer(host = 'localhost', port = 8080) {
+    connectServer(host = 'localhost', port = 8080, password = '') {
         try {
+            // store password for hello packet and possible reconnects
+            this.serverPassword = password || '';
             const url = `ws://${host}:${port}`;
             console.log('Connecting to server:', url);
             this.ws = new WebSocket(url);
@@ -4326,9 +4328,9 @@ class Game {
 
             this.ws.onopen = () => {
                 console.log('Connected to server');
-                // Send hello with player info
+                // Send hello with player info (include password if provided)
                 try {
-                    this.ws.send(JSON.stringify({ type: 'hello', name: this.playerName, team: this.team }));
+                    this.ws.send(JSON.stringify({ type: 'hello', name: this.playerName, team: this.team, password: this.serverPassword }));
                 } catch {}
             };
 
@@ -4343,6 +4345,12 @@ class Game {
                                     this.remotePlayers.set(p.id, p);
                                     this.createRemotePlayerModel(p);
                                 }
+                            }
+                            break;
+                        case 'error':
+                            // display server-side errors as chat so user sees them
+                            if (msg.text) {
+                                this.addChatMessage(`Server: ${msg.text}`);
                             }
                             break;
                         case 'join':
@@ -10391,18 +10399,41 @@ window.addEventListener('load', () => {
     portRow.appendChild(portLabel);
     settingsContainer.appendChild(portRow);
 
+    // Server password input
+    const passwordRow = document.createElement('div');
+    passwordRow.style.margin = '8px 0';
+    passwordRow.style.display = 'none';
+    passwordRow.id = 'server-password-row';
+    const passwordLabel = document.createElement('label');
+    passwordLabel.style.color = '#aaa';
+    passwordLabel.textContent = 'Password: ';
+    const passwordInput = document.createElement('input');
+    passwordInput.type = 'text';
+    passwordInput.id = 'menu-server-password';
+    passwordInput.placeholder = '(optional)';
+    passwordInput.value = localStorage.getItem('serverPassword') || '';
+    passwordInput.style.padding = '4px';
+    passwordInput.style.marginLeft = '4px';
+    passwordInput.style.width = '150px';
+    passwordLabel.appendChild(passwordInput);
+    passwordRow.appendChild(passwordLabel);
+    settingsContainer.appendChild(passwordRow);
+
     // Toggle server fields visibility
     serverCheckbox.addEventListener('change', () => {
         const hostRow = document.getElementById('server-host-row');
         const portRow = document.getElementById('server-port-row');
+        const pwdRow = document.getElementById('server-password-row');
         const savedRow = document.getElementById('saved-servers-row');
         if (serverCheckbox.checked) {
             hostRow.style.display = 'block';
             portRow.style.display = 'block';
+            pwdRow.style.display = 'block';
             savedRow.style.display = 'block';
         } else {
             hostRow.style.display = 'none';
             portRow.style.display = 'none';
+            pwdRow.style.display = 'none';
             savedRow.style.display = 'none';
         }
     });
@@ -10455,7 +10486,8 @@ window.addEventListener('load', () => {
                 const info = document.createElement('span');
                 info.style.color = '#aaa';
                 info.style.fontSize = '11px';
-                info.textContent = `${server.name || server.host}:${server.port}`;
+                // display name + show a lock icon if password is set
+                info.textContent = `${server.name || server.host}:${server.port}` + (server.password ? ' (pw)' : '');
                 serverDiv.appendChild(info);
                 
                 const useBtn = document.createElement('button');
@@ -10471,6 +10503,7 @@ window.addEventListener('load', () => {
                 useBtn.addEventListener('click', () => {
                     document.getElementById('menu-server-host').value = server.host;
                     document.getElementById('menu-server-port').value = server.port;
+                    document.getElementById('menu-server-password').value = server.password || '';
                 });
                 serverDiv.appendChild(useBtn);
 
@@ -10489,14 +10522,16 @@ window.addEventListener('load', () => {
                     // Start game and connect to this server
                     const playerName = document.getElementById('player-name-input').value || 'Player';
                     const playerEmail = document.getElementById('player-email-input').value || '';
+                    const pw = server.password || '';
                     localStorage.setItem('playerName', playerName);
                     localStorage.setItem('playerEmail', playerEmail);
                     localStorage.setItem('serverHost', server.host);
                     localStorage.setItem('serverPort', server.port);
+                    localStorage.setItem('serverPassword', pw);
                     document.body.removeChild(menu);
                     const game = new Game('default', false, 'red', playerName);
                     window._game = game;
-                    game.connectServer(server.host, server.port);
+                    game.connectServer(server.host, server.port, pw);
                 });
                 serverDiv.appendChild(joinBtn);
                 
@@ -10543,12 +10578,13 @@ window.addEventListener('load', () => {
     saveBtn.addEventListener('click', () => {
         const host = document.getElementById('menu-server-host').value || 'localhost';
         const port = parseInt(document.getElementById('menu-server-port').value, 10) || 8080;
-        const name = `${host}:${port}`;
+        const pw = document.getElementById('menu-server-password').value || '';
+        const name = `${host}:${port}` + (pw ? ' (pw)' : '');
         
         // Check if already saved
-        const exists = savedServers.some(s => s.host === host && s.port === port);
+        const exists = savedServers.some(s => s.host === host && s.port === port && s.password === pw);
         if (!exists) {
-            savedServers.push({ name, host, port });
+            savedServers.push({ name, host, port, password: pw });
             localStorage.setItem('savedServers', JSON.stringify(savedServers));
             renderSavedServers();
         }
@@ -10569,18 +10605,39 @@ window.addEventListener('load', () => {
         // Start game and connect to this server
         const host = document.getElementById('menu-server-host').value || 'localhost';
         const port = parseInt(document.getElementById('menu-server-port').value, 10) || 8080;
+        const pw = document.getElementById('menu-server-password').value || '';
         const playerName = document.getElementById('player-name-input').value || 'Player';
         const playerEmail = document.getElementById('player-email-input').value || '';
         localStorage.setItem('playerName', playerName);
         localStorage.setItem('playerEmail', playerEmail);
         localStorage.setItem('serverHost', host);
         localStorage.setItem('serverPort', port);
+        localStorage.setItem('serverPassword', pw);
         document.body.removeChild(menu);
         const game = new Game('default', false, 'red', playerName);
         window._game = game;
-        game.connectServer(host, port);
+        game.connectServer(host, port, pw);
     });
     btnContainer.appendChild(joinServerBtn);
+
+    // Host button will simply store a password and give instructions
+    const hostBtn = document.createElement('button');
+    hostBtn.textContent = 'Host';
+    hostBtn.style.flex = '1';
+    hostBtn.style.padding = '6px';
+    hostBtn.style.background = '#ffaa00';
+    hostBtn.style.color = '#000';
+    hostBtn.style.border = 'none';
+    hostBtn.style.borderRadius = '3px';
+    hostBtn.style.cursor = 'pointer';
+    hostBtn.addEventListener('click', () => {
+        const pw = prompt('Enter a password for your server (leave blank for none):') || '';
+        localStorage.setItem('serverPassword', pw);
+        alert(`To host a game, run the Node server on your machine with the same password.\n` +
+              `Example:\nnode server.js 3000 0.0.0.0 ${pw || '<no password>'}\n` +
+              `Then have your friend connect using that IP/port and password.`);
+    });
+    btnContainer.appendChild(hostBtn);
 
     savedRow.appendChild(btnContainer);
 
@@ -11089,6 +11146,7 @@ window.addEventListener('load', () => {
             const useServer = !!document.getElementById('server-enabled-checkbox').checked;
             const serverHost = document.getElementById('menu-server-host').value || 'localhost';
             const serverPort = parseInt(document.getElementById('menu-server-port').value, 10) || 8080;
+            const serverPassword = document.getElementById('menu-server-password').value || '';
             const survivalMode = !!document.getElementById('survival-checkbox').checked;
             
             // Save to localStorage
@@ -11097,6 +11155,7 @@ window.addEventListener('load', () => {
             localStorage.setItem('playerColor', playerColor);
             localStorage.setItem('serverHost', serverHost);
             localStorage.setItem('serverPort', serverPort);
+            localStorage.setItem('serverPassword', serverPassword);
             
             // Stop menu music
             if (menuMusic) {
@@ -11123,7 +11182,7 @@ window.addEventListener('load', () => {
             
             // Auto-connect to server if enabled
             if (useServer) {
-                game.connectServer(serverHost, serverPort);
+                game.connectServer(serverHost, serverPort, serverPassword);
             }
             
             console.log('Game instantiated successfully');
