@@ -3979,8 +3979,7 @@ class Game {
         }, 5000);
 
         // Sound effects
-        this.musketSound = new Audio('musket.mp3');
-        this.musketSound.volume = 0.7; // a bit louder than UI clicks
+        this.musketSoundSrc = 'musket.mp3'; // store source path instead of creating instance
 
         
         // Block type to name mapping
@@ -6519,15 +6518,13 @@ class Game {
     // that case.
     shootMusket() {
         if (!this.player) return;
-        // play firing sound (clone node so multiple shots can overlap)
-        if (this.musketSound) {
-            try {
-                const snd = this.musketSound.cloneNode();
-                snd.currentTime = 0;
-                snd.play().catch(e => console.log('Musket sound failed:', e));
-            } catch (e) {
-                console.log('Error playing musket sound:', e);
-            }
+        // play firing sound by creating a new Audio instance
+        try {
+            const snd = new Audio(this.musketSoundSrc);
+            snd.volume = 0.7;
+            snd.play().catch(e => console.log('Musket sound failed:', e));
+        } catch (e) {
+            console.log('Error playing musket sound:', e);
         }
 
         const camera = this.player.getCamera();
