@@ -7159,8 +7159,8 @@ class Game {
                 { inputs: { 1: 5 }, result: 31, resultAmount: 1, name: '5 Dirt → 1 Cloud Pillow' },
                 // musket recipe: 2 planks + 5 coal + 3 stone
                 { inputs: { 13: 2, 24: 5, 3: 3 }, result: this.MUSKET_TYPE, resultAmount: 1, name: '2 Planks + 5 Coal + 3 Stone → Musket' },
-                // paint brush recipe: 1 stick + 1 paper + 1 coal
-                { inputs: { 15: 1, 14: 1, 24: 1 }, result: this.PAINT_BRUSH_TYPE, resultAmount: 1, name: '1 Stick + 1 Paper + 1 Coal → Paint Brush' }
+                // paint brush recipe: 2 sticks
+                { inputs: { 15: 2 }, result: this.PAINT_BRUSH_TYPE, resultAmount: 1, name: '2 Sticks → Paint Brush' }
             ];
 
             // Create recipe list
