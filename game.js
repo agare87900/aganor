@@ -3992,6 +3992,7 @@ class Game {
         // users can obtain it via the block picker.
         const MUSKET_TYPE = 37;
         const SLIME_TYPE = 38;
+        const PAINT_BRUSH_TYPE = 39;
 
         this.blockNames = {
             0: 'Air',
@@ -4032,12 +4033,18 @@ class Game {
             35: 'Smiteth Scroll',
             36: 'Gloom',
             [MUSKET_TYPE]: 'Musket',  // new weapon
-            [SLIME_TYPE]: 'Slime'    // dropped by slain slimes
+            [SLIME_TYPE]: 'Slime',    // dropped by slain slimes
+            [PAINT_BRUSH_TYPE]: 'Paint Brush'  // new tool
         };
 
         // push constants onto game instance so other methods can refer to them
         this.MUSKET_TYPE = MUSKET_TYPE;
         this.SLIME_TYPE = SLIME_TYPE;
+        this.PAINT_BRUSH_TYPE = PAINT_BRUSH_TYPE;
+        this.paintBrushColor = '#ffffff'; // default white
+        this.blockTints = new Map(); // {"x,y,z" -> "#rrggbb"} tint colors for blocks
+        this.overlayMeshes = new Map(); // {"tint-x,y,z" -> THREE.Mesh} visual overlays
+
         
         // Lair system - hierarchical organization of items
         this.lairs = {
@@ -4296,6 +4303,9 @@ class Game {
         if (this.survivalMode) {
             this.createHealthBar();
         }
+        
+        // Create paint brush color picker
+        this.createColorPicker();
 
         // (music removed)
 
@@ -5717,6 +5727,12 @@ class Game {
                     this.player.selectedBlock = blockType;
                     this.hotbarIndex = idx;
                     this.updateHotbar();
+                    // show/hide color picker based on paint brush selection
+                    if (blockType === this.PAINT_BRUSH_TYPE) {
+                        this.showColorPicker();
+                    } else {
+                        this.hideColorPicker();
+                    }
                 }
             });
             // accept drops from inventory
@@ -5768,6 +5784,12 @@ class Game {
             const bt = parseInt(slot.dataset.block) || 0;
             this.player.selectedBlock = bt;
             this.updateHotbar();
+            // show/hide color picker based on paint brush selection
+            if (bt === this.PAINT_BRUSH_TYPE) {
+                this.showColorPicker();
+            } else {
+                this.hideColorPicker();
+            }
         }, { passive: false });
 
         // Window resize
@@ -6074,8 +6096,8 @@ class Game {
             this.hotbarIndex = 0;
             this.player.selectedBlock = 0;
         } else {
-            // In creative mode: populate hotbar with common blocks (include musket as last slot)
-            const blockTypes = [1, 2, 3, 4, 5, 6, 7, 8, 12, this.MUSKET_TYPE];
+            // In creative mode: populate hotbar with common blocks (include musket and paint brush as last slots)
+            const blockTypes = [1, 2, 3, 4, 5, 6, 7, 8, this.MUSKET_TYPE, this.PAINT_BRUSH_TYPE];
             slots.forEach((slot, i) => {
                 if (i < blockTypes.length) {
                     const blockType = blockTypes[i];
@@ -6525,6 +6547,11 @@ class Game {
         // musket override
         if (this.player.selectedBlock === this.MUSKET_TYPE) {
             this.shootMusket();
+            return;
+        }
+        // paint brush override
+        if (this.player.selectedBlock === this.PAINT_BRUSH_TYPE) {
+            this.paintBlock();
             return;
         }
         const hit = this.raycastBlock();
@@ -7131,7 +7158,9 @@ class Game {
                 { inputs: { 3: 1, 13: 1 }, result: 30, resultAmount: 1, name: '1 Stone + 1 Plank → 1 Chisel' },
                 { inputs: { 1: 5 }, result: 31, resultAmount: 1, name: '5 Dirt → 1 Cloud Pillow' },
                 // musket recipe: 2 planks + 5 coal + 3 stone
-                { inputs: { 13: 2, 24: 5, 3: 3 }, result: this.MUSKET_TYPE, resultAmount: 1, name: '2 Planks + 5 Coal + 3 Stone → Musket' }
+                { inputs: { 13: 2, 24: 5, 3: 3 }, result: this.MUSKET_TYPE, resultAmount: 1, name: '2 Planks + 5 Coal + 3 Stone → Musket' },
+                // paint brush recipe: 1 stick + 1 paper + 1 coal
+                { inputs: { 15: 1, 14: 1, 24: 1 }, result: this.PAINT_BRUSH_TYPE, resultAmount: 1, name: '1 Stick + 1 Paper + 1 Coal → Paint Brush' }
             ];
 
             // Create recipe list
@@ -8805,6 +8834,117 @@ class Game {
                 fill.style.background = 'linear-gradient(to bottom, #ff8844, #dd4400)';
             } else {
                 fill.style.background = 'linear-gradient(to bottom, #ff0000, #880000)';
+            }
+        }
+    }
+
+    createColorPicker() {
+        if (this._colorPickerEl) return;
+
+        const container = document.createElement('div');
+        container.id = 'color-picker-container';
+        container.style.position = 'absolute';
+        container.style.bottom = '100px';
+        container.style.left = '20px';
+        container.style.zIndex = '20';
+        container.style.display = 'none'; // initially hidden
+
+        const label = document.createElement('div');
+        label.textContent = 'Brush Color';
+        label.style.color = '#fff';
+        label.style.fontFamily = 'Arial, sans-serif';
+        label.style.fontSize = '14px';
+        label.style.marginBottom = '8px';
+        label.style.textShadow = '2px 2px 4px rgba(0,0,0,0.8)';
+        container.appendChild(label);
+
+        const colorInput = document.createElement('input');
+        colorInput.type = 'color';
+        colorInput.id = 'brush-color-input';
+        colorInput.value = this.paintBrushColor;
+        colorInput.style.width = '100px';
+        colorInput.style.height = '50px';
+        colorInput.style.border = '2px solid #666';
+        colorInput.style.borderRadius = '4px';
+        colorInput.style.cursor = 'pointer';
+        colorInput.addEventListener('change', (e) => {
+            this.paintBrushColor = e.target.value;
+        });
+        colorInput.addEventListener('input', (e) => {
+            this.paintBrushColor = e.target.value;
+        });
+        container.appendChild(colorInput);
+
+        document.body.appendChild(container);
+        this._colorPickerEl = container;
+    }
+
+    showColorPicker() {
+        if (this._colorPickerEl) {
+            this._colorPickerEl.style.display = 'block';
+        }
+    }
+
+    hideColorPicker() {
+        if (this._colorPickerEl) {
+            this._colorPickerEl.style.display = 'none';
+        }
+    }
+
+    paintBlock() {
+        const hit = this.raycastBlock();
+        if (hit && hit.blockType > 0 && hit.blockType !== 5) { // Don't paint water, air, etc.
+            const key = `${hit.x},${hit.y},${hit.z}`;
+            this.blockTints.set(key, this.paintBrushColor);
+            
+            // Create or update a visual overlay
+            const overlayKey = `tint-${key}`;
+            if (this.overlayMeshes && this.overlayMeshes.has(overlayKey)) {
+                this.scene.remove(this.overlayMeshes.get(overlayKey));
+            }
+            
+            if (!this.overlayMeshes) this.overlayMeshes = new Map();
+            
+            // Create a translucent overlay box that matches the block
+            const tileSize = 1; // blocks are 1x1x1 voxels
+            const geom = new THREE.BoxGeometry(tileSize, tileSize, tileSize);
+            
+            // Parse hex color to RGB
+            const rgb = parseInt(this.paintBrushColor.substring(1), 16);
+            const r = (rgb >> 16) & 255;
+            const g = (rgb >> 8) & 255;
+            const b = rgb & 255;
+            
+            const mat = new THREE.MeshBasicMaterial({
+                color: new THREE.Color(r / 255, g / 255, b / 255),
+                transparent: true,
+                opacity: 0.35,
+                depthWrite: false,
+                side: THREE.FrontSide
+            });
+            
+            const overlay = new THREE.Mesh(geom, mat);
+            overlay.position.set(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5);
+            overlay.userData.tintKey = key;
+            this.scene.add(overlay);
+            this.overlayMeshes.set(overlayKey, overlay);
+            
+            // Update mesh to show tint
+            const cx = Math.floor(hit.x / this.world.chunkSize);
+            const cz = Math.floor(hit.z / this.world.chunkSize);
+            this.updateChunkMesh(cx, cz);
+            
+            // Tint updates to server
+            if (this.ws && this.ws.readyState === 1) {
+                try {
+                    this.ws.send(JSON.stringify({
+                        type: 'blockTint',
+                        x: hit.x,
+                        y: hit.y,
+                        z: hit.z,
+                        color: this.paintBrushColor
+                    }));
+                } catch {}
             }
         }
     }
