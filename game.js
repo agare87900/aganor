@@ -6097,7 +6097,7 @@ class Game {
             this.player.selectedBlock = 0;
         } else {
             // In creative mode: populate hotbar with common blocks (include musket and paint brush as last slots)
-            const blockTypes = [1, 2, 3, 4, 5, 6, 7, 8, this.MUSKET_TYPE, this.PAINT_BRUSH_TYPE];
+            const blockTypes = [1, 2, 3, 4, 5, 6, 13, this.MUSKET_TYPE, this.PAINT_BRUSH_TYPE];
             slots.forEach((slot, i) => {
                 if (i < blockTypes.length) {
                     const blockType = blockTypes[i];
