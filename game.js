@@ -8410,7 +8410,7 @@ class Game {
         // `isBlockPlaceable`.
         const blockTypes = Object.keys(this.blockNames)
             .map(Number)
-            .filter(t => t > 0 && (this.world.isBlockPlaceable(t) || t === this.MUSKET_TYPE))
+            .filter(t => t > 0 && (this.world.isBlockPlaceable(t) || t === this.MUSKET_TYPE || t === this.PAINT_BRUSH_TYPE))
             .sort((a, b) => a - b);
 
         blockTypes.forEach(blockType => {
