@@ -3027,6 +3027,265 @@ class Slime {
     }
 }
 
+class Squirrel {
+    constructor(position = new THREE.Vector3(), gameInstance = null) {
+        this.position = position.clone();
+        this.game = gameInstance;
+        this.yaw = 0;
+        this.speed = 0.12; // Nimble and quick
+        this.velocity = new THREE.Vector3(0, 0, 0);
+        this.gravity = 0.015;
+        this.size = { halfX: 0.125, halfY: 0.2, halfZ: 0.1 }; // Very small creature
+        this.onGround = false;
+        this.jumpPower = 0.22;
+        this.jumpCooldown = 400; // ms
+        this.lastJumpTime = 0;
+        this.mesh = null;
+        
+        // Behavior
+        this.wanderDir = new THREE.Vector3(0, 0, 0);
+        this.nextWanderChange = 0;
+        this.wanderSpeed = 0.08;
+    }
+
+    createMesh() {
+        const group = new THREE.Group();
+
+        // Main body - reddish-brown
+        const bodyMaterial = new THREE.MeshLambertMaterial({ color: 0xcc6633 });
+        const tailMaterial = new THREE.MeshLambertMaterial({ color: 0x996633 });
+
+        // Torso (main body)
+        const torsoGeo = new THREE.BoxGeometry(0.25, 0.2, 0.15);
+        const torso = new THREE.Mesh(torsoGeo, bodyMaterial);
+        torso.castShadow = true;
+        group.add(torso);
+
+        // Head
+        const headGeo = new THREE.SphereGeometry(0.1, 8, 8);
+        const head = new THREE.Mesh(headGeo, bodyMaterial);
+        head.position.y = 0.12;
+        head.position.z = 0.08;
+        head.castShadow = true;
+        group.add(head);
+
+        // Ears - triangular
+        const earGeo = new THREE.ConeGeometry(0.04, 0.07, 8);
+        const leftEar = new THREE.Mesh(earGeo, bodyMaterial);
+        leftEar.position.set(-0.08, 0.22, 0.08);
+        leftEar.castShadow = true;
+        group.add(leftEar);
+        
+        const rightEar = new THREE.Mesh(earGeo, bodyMaterial);
+        rightEar.position.set(0.08, 0.22, 0.08);
+        rightEar.castShadow = true;
+        group.add(rightEar);
+
+        // Small eyes
+        const eyeBlack = new THREE.MeshBasicMaterial({ color: 0x000000 });
+        const eyeGeo = new THREE.SphereGeometry(0.02, 8, 8);
+        
+        const leftEye = new THREE.Mesh(eyeGeo, eyeBlack);
+        leftEye.position.set(-0.05, 0.16, 0.18);
+        group.add(leftEye);
+        
+        const rightEye = new THREE.Mesh(eyeGeo, eyeBlack);
+        rightEye.position.set(0.05, 0.16, 0.18);
+        group.add(rightEye);
+
+        // Bushy tail - large and fluffy
+        const tailGeo = new THREE.BoxGeometry(0.08, 0.25, 0.18);
+        const tail = new THREE.Mesh(tailGeo, tailMaterial);
+        tail.position.set(0, 0.05, -0.2);
+        tail.rotation.z = 0.4; // Curved upward
+        tail.castShadow = true;
+        group.add(tail);
+
+        // Front legs
+        const legGeo = new THREE.BoxGeometry(0.06, 0.12, 0.06);
+        const frontLeftLeg = new THREE.Mesh(legGeo, bodyMaterial);
+        frontLeftLeg.position.set(-0.1, -0.1, 0.05);
+        frontLeftLeg.castShadow = true;
+        group.add(frontLeftLeg);
+        
+        const frontRightLeg = new THREE.Mesh(legGeo, bodyMaterial);
+        frontRightLeg.position.set(0.1, -0.1, 0.05);
+        frontRightLeg.castShadow = true;
+        group.add(frontRightLeg);
+
+        // Back legs
+        const backLeftLeg = new THREE.Mesh(legGeo, bodyMaterial);
+        backLeftLeg.position.set(-0.1, -0.1, -0.05);
+        backLeftLeg.castShadow = true;
+        group.add(backLeftLeg);
+        
+        const backRightLeg = new THREE.Mesh(legGeo, bodyMaterial);
+        backRightLeg.position.set(0.1, -0.1, -0.05);
+        backRightLeg.castShadow = true;
+        group.add(backRightLeg);
+
+        group.position.copy(this.position);
+        this.mesh = group;
+        return group;
+    }
+
+    update(world, targetPlayer, deltaTime) {
+        if (!world || !targetPlayer) return;
+
+        const now = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+        const { halfX, halfY, halfZ } = this.size;
+
+        // Check ground collision
+        const checkGround = () => {
+            const sampleOffsets = [0, -0.1, 0.1];
+            const feetY = this.position.y - halfY;
+            let highestTop = -Infinity;
+
+            for (const ox of sampleOffsets) {
+                for (const oz of sampleOffsets) {
+                    const bx = Math.floor(this.position.x + ox);
+                    const bz = Math.floor(this.position.z + oz);
+                    const by = Math.floor(feetY - 0.05);
+                    if (!world.isBlockSolid(world.getBlock(bx, by, bz))) continue;
+                    const top = by + 1;
+                    if (top > highestTop) highestTop = top;
+                }
+            }
+
+            if (highestTop !== -Infinity) {
+                const gap = highestTop - feetY;
+                if (gap >= -0.08 && gap <= 0.25) {
+                    this.position.y = highestTop + halfY + 0.001;
+                    this.velocity.y = Math.max(this.velocity.y, 0);
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        this.onGround = checkGround();
+
+        // Apply gravity
+        if (!this.onGround) {
+            this.velocity.y -= this.gravity;
+        }
+
+        // Wander behavior - squirrels are curious and constantly moving
+        if (now >= this.nextWanderChange) {
+            const pause = Math.random() < 0.15; // mostly moving
+            if (pause) {
+                this.wanderDir = new THREE.Vector3(0, 0, 0);
+            } else {
+                const angle = Math.random() * Math.PI * 2;
+                this.wanderDir = new THREE.Vector3(Math.sin(angle), 0, Math.cos(angle));
+            }
+            this.nextWanderChange = now + 800 + Math.random() * 1200; // Change direction frequently
+        }
+
+        let horizontal = this.wanderDir.clone();
+        const distance = horizontal.length();
+        if (distance > 0.05) {
+            horizontal.normalize();
+            const step = this.wanderSpeed * Math.max(deltaTime * 60, 1);
+            this.velocity.x = horizontal.x * step;
+            this.velocity.z = horizontal.z * step;
+            this.yaw = Math.atan2(horizontal.x, horizontal.z);
+        } else {
+            this.velocity.x *= 0.7;
+            this.velocity.z *= 0.7;
+        }
+
+        // Squirrels can jump over small obstacles
+        if (this.onGround && distance > 0.05) {
+            const forward = horizontal.lengthSq() > 0 ? horizontal.clone().normalize() : null;
+            if (forward) {
+                const probeX = this.position.x + forward.x * (halfX + 0.15);
+                const probeZ = this.position.z + forward.z * (halfZ + 0.15);
+                const footY = Math.floor(this.position.y - halfY - 0.01);
+                const headY = Math.floor(this.position.y + halfY + 0.15);
+                const baseBlock = world.getBlock(Math.floor(probeX), footY, Math.floor(probeZ));
+                const aboveBlock = world.getBlock(Math.floor(probeX), footY + 1, Math.floor(probeZ));
+                const headClear = !world.isBlockSolid(world.getBlock(Math.floor(probeX), headY, Math.floor(probeZ)));
+
+                if (world.isBlockSolid(baseBlock) && !world.isBlockSolid(aboveBlock) && headClear) {
+                    if (now - this.lastJumpTime >= this.jumpCooldown) {
+                        this.velocity.y = this.jumpPower;
+                        this.onGround = false;
+                        this.lastJumpTime = now;
+                    }
+                }
+            }
+        }
+
+        // Collision detection helper
+        const isSolidAt = (pos) => world.isBlockSolid(world.getBlock(Math.floor(pos[0]), Math.floor(pos[1]), Math.floor(pos[2])));
+        const hasCollision = (pos) => {
+            const pts = [
+                [pos.x - halfX, pos.y - halfY, pos.z - halfZ],
+                [pos.x + halfX, pos.y - halfY, pos.z - halfZ],
+                [pos.x - halfX, pos.y + halfY, pos.z - halfZ],
+                [pos.x + halfX, pos.y + halfY, pos.z - halfZ],
+                [pos.x - halfX, pos.y - halfY, pos.z + halfZ],
+                [pos.x + halfX, pos.y - halfY, pos.z + halfZ],
+                [pos.x - halfX, pos.y + halfY, pos.z + halfZ],
+                [pos.x + halfX, pos.y + halfY, pos.z + halfZ]
+            ];
+            for (const p of pts) if (isSolidAt(p)) return true;
+            return false;
+        };
+
+        const nextPos = this.position.clone();
+        // Horizontal X
+        nextPos.x += this.velocity.x;
+        if (!hasCollision(nextPos)) {
+            this.position.x = nextPos.x;
+        } else {
+            this.velocity.x = 0;
+        }
+
+        // Horizontal Z
+        nextPos.z = this.position.z + this.velocity.z;
+        nextPos.x = this.position.x;
+        if (!hasCollision(nextPos)) {
+            this.position.z = nextPos.z;
+        } else {
+            this.velocity.z = 0;
+        }
+
+        // Vertical
+        nextPos.y = this.position.y + this.velocity.y;
+        nextPos.x = this.position.x;
+        nextPos.z = this.position.z;
+        let landed = false;
+        if (!hasCollision(nextPos)) {
+            this.position.y = nextPos.y;
+        } else {
+            if (this.velocity.y < 0) {
+                const feetY = this.position.y - halfY;
+                const by = Math.floor(feetY - 0.01);
+                const bx = Math.floor(this.position.x);
+                const bz = Math.floor(this.position.z);
+                if (world.isBlockSolid(world.getBlock(bx, by, bz))) {
+                    this.position.y = by + 1 + halfY + 0.001;
+                }
+                landed = true;
+            }
+            this.velocity.y = 0;
+        }
+
+        this.onGround = landed || checkGround();
+
+        // Gentle bobbing when idle
+        const t = (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()) * 0.001;
+        const bob = this.onGround ? Math.sin(t * 5) * 0.03 : 0;
+
+        if (this.mesh) {
+            this.mesh.position.set(this.position.x, this.position.y + bob, this.position.z);
+            this.mesh.rotation.y = this.yaw;
+        }
+    }
+}
+
 class Minutor {
     constructor(position = new THREE.Vector3(), survivalMode = false) {
         this.position = position.clone();
@@ -4196,6 +4455,7 @@ class Game {
         // Hostile mobs
         this.pigmen = [];
         this.slimes = []; // teal transparent mobs with grey eyes
+        this.squirrels = []; // cute and harmless creatures
         // Active projectiles fired by muskets (or other future weapons)
         this.projectiles = [];
         // Force-spawn pigmen (and slimes) nearby to guarantee they appear
@@ -4228,8 +4488,18 @@ class Game {
                 console.log(`[Init] Attempting slime spawn ${i + 1} at (${sx.toFixed(1)}, ${sy.toFixed(1)}, ${sz.toFixed(1)})`);
                 const slime = this.spawnSlimeAtExact ? this.spawnSlimeAtExact(sx, sy, sz) : null;
                 console.log(`[Init] Slime spawn ${i + 1} result:`, slime ? 'SUCCESS' : 'FAILED');
+
+                // Also spawn a squirrel for variety
+                const squangle = Math.random() * Math.PI * 2;
+                const sqradius = 6 + Math.random() * 2;
+                const sqx = this.player.position.x + Math.cos(squangle) * sqradius;
+                const sqy = py;
+                const sqz = this.player.position.z + Math.sin(squangle) * sqradius;
+                console.log(`[Init] Attempting squirrel spawn ${i + 1} at (${sqx.toFixed(1)}, ${sqy.toFixed(1)}, ${sqz.toFixed(1)})`);
+                const squirrel = this.spawnSquirrelAtExact ? this.spawnSquirrelAtExact(sqx, sqy, sqz) : null;
+                console.log(`[Init] Squirrel spawn ${i + 1} result:`, squirrel ? 'SUCCESS' : 'FAILED');
             }
-            console.log(`[Init] Total pigmen after force-spawn: ${this.pigmen.length}, slimes: ${this.slimes.length}`);
+            console.log(`[Init] Total pigmen after force-spawn: ${this.pigmen.length}, slimes: ${this.slimes.length}, squirrels: ${this.squirrels.length}`);
         }, 1500);
         this.pigmanPriest = null; // Boss mob
         this.minutors = [];
@@ -4315,16 +4585,88 @@ class Game {
         this.animate();
     }
 
-    // Connect to an online WebSocket server
-    connectServer(host = 'localhost', port = 8080, password = '') {
+    // Connect to an online WebSocket server. By default this uses native WebSocket.
+    // Set `forceSocketIO` to true to use Socket.IO instead (only if `io` is available).
+    connectServer(host = 'localhost', port = 8080, password = '', forceSocketIO = false) {
         try {
             // store password for hello packet and possible reconnects
             this.serverPassword = password || '';
+            this.remotePlayers = new Map(); // {id -> {x,y,z,yaw,name,team}}
+            this.remotePlayerModels = new Map(); // {id -> THREE.Group}
+
+            // If caller explicitly requests Socket.IO and the client lib is present, use it.
+            if (forceSocketIO && typeof io !== 'undefined') {
+                const url = `http://${host}:${port}`;
+                console.log('Connecting to server (socket.io):', url);
+                this.socket = io(url);
+
+                // Provide a ws-like send wrapper so existing code can call this.ws.send(...)
+                this.ws = {
+                    readyState: 1,
+                    send: (data) => {
+                        try {
+                            const parsed = JSON.parse(data);
+                            this.socket.emit('raw', parsed);
+                        } catch (e) {
+                            this.socket.emit('raw', data);
+                        }
+                    }
+                };
+
+                this.socket.on('raw', (m) => {
+                    try {
+                        switch (m.type) {
+                            case 'welcome':
+                                for (const p of m.players || []) {
+                                    if (p.id !== m.id) { this.remotePlayers.set(p.id, p); this.createRemotePlayerModel(p); }
+                                }
+                                break;
+                            case 'error':
+                                if (m.text) this.addChatMessage(`Server: ${m.text}`);
+                                break;
+                            case 'join':
+                                if (m.player && !this.remotePlayers.has(m.player.id)) { this.addChatMessage(`${m.player.name} connected`); this.remotePlayers.set(m.player.id, m.player); this.createRemotePlayerModel(m.player); }
+                                break;
+                            case 'leave':
+                                if (m.id) { const p = this.remotePlayers.get(m.id); const name = p ? p.name : `Player${m.id}`; this.addChatMessage(`${name} disconnected`); this.remotePlayers.delete(m.id); this.removeRemotePlayerModel(m.id); }
+                                break;
+                            case 'state':
+                                if (m.id) { const p = this.remotePlayers.get(m.id) || { id: m.id }; p.x = m.x; p.y = m.y; p.z = m.z; p.yaw = m.yaw; this.remotePlayers.set(m.id, p); }
+                                break;
+                            case 'blockChange':
+                                if (m.x !== undefined && m.y !== undefined && m.z !== undefined && m.blockType !== undefined) {
+                                    this.world.setBlock(m.x, m.y, m.z, m.blockType);
+                                    const cx = Math.floor(m.x / this.world.chunkSize);
+                                    const cz = Math.floor(m.z / this.world.chunkSize);
+                                    this.updateChunkMesh(cx, cz);
+                                    if (m.x % this.world.chunkSize === 0) this.updateChunkMesh(cx - 1, cz);
+                                    if (m.z % this.world.chunkSize === 0) this.updateChunkMesh(cx, cz - 1);
+                                }
+                                break;
+                            case 'chat':
+                                if (m.name && m.text) this.addChatMessage(`${m.name}: ${m.text}`);
+                                break;
+                        }
+                    } catch (e) { console.warn('Bad server message', e); }
+                });
+
+                this.socket.on('connect', () => {
+                    console.log('Connected to server (socket.io)');
+                    this.socket.emit('raw', { type: 'hello', name: this.playerName, team: this.team, password: this.serverPassword });
+                });
+
+                this.socket.on('disconnect', () => {
+                    console.log('Disconnected from server (socket.io)');
+                    for (const id of this.remotePlayerModels.keys()) this.removeRemotePlayerModel(id);
+                });
+
+                return;
+            }
+
+            // Default: native WebSocket
             const url = `ws://${host}:${port}`;
             console.log('Connecting to server:', url);
             this.ws = new WebSocket(url);
-            this.remotePlayers = new Map(); // {id -> {x,y,z,yaw,name,team}}
-            this.remotePlayerModels = new Map(); // {id -> THREE.Group}
 
             this.ws.onopen = () => {
                 console.log('Connected to server');
@@ -5092,6 +5434,70 @@ class Game {
         this.otherPlayerModel = group;
     }
 
+    spawnSquirrelAt(x, z) {
+        if (!this.world) return null;
+        let surfaceY = this.world.getTerrainHeight(Math.floor(x), Math.floor(z));
+        // If below water, clamp to water surface
+        if (surfaceY < this.world.waterLevel - 1) {
+            surfaceY = this.world.waterLevel + 1;
+        }
+
+        const pos = new THREE.Vector3(x + 0.5, surfaceY + 0.5, z + 0.5);
+        const squirrel = new Squirrel(pos, this);
+        const mesh = squirrel.createMesh();
+        if (mesh) this.scene.add(mesh);
+        this.squirrels.push(squirrel);
+        console.log(`[Spawn] Squirrel at (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})`);
+        return squirrel;
+    }
+
+    spawnSquirrelAtExact(x, y, z) {
+        if (!this.scene) {
+            console.error('[spawnSquirrelAtExact] No scene available!');
+            return null;
+        }
+        
+        try {
+            const pos = new THREE.Vector3(x, y, z);
+            const squirrel = new Squirrel(pos, this);
+            const mesh = squirrel.createMesh();
+            
+            if (mesh) {
+                this.scene.add(mesh);
+            }
+            
+            this.squirrels.push(squirrel);
+            console.log(`[Spawn] Squirrel (exact) at (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}) - Total: ${this.squirrels.length}`);
+            return squirrel;
+        } catch (error) {
+            console.error('[spawnSquirrelAtExact] Error during spawn:', error);
+            return null;
+        }
+    }
+
+    spawnSquirrels(count = 3) {
+        if (!this.world || !this.scene) return;
+        const radius = Math.max(8, (this.renderDistance * this.world.chunkSize) - 4);
+        for (let i = 0; i < count; i++) {
+            let spawned = false;
+            for (let attempt = 0; attempt < 20 && !spawned; attempt++) {
+                const angle = Math.random() * Math.PI * 2;
+                const r = Math.random() * radius * 0.8;
+                const rx = this.player.position.x + Math.cos(angle) * r;
+                const rz = this.player.position.z + Math.sin(angle) * r;
+                const squirrel = this.spawnSquirrelAt(rx, rz);
+                spawned = !!squirrel;
+            }
+            if (!spawned && this.player) {
+                const forward = new THREE.Vector3(Math.sin(this.player.yaw), 0, Math.cos(this.player.yaw));
+                const nearPos = this.player.position.clone().addScaledVector(forward, 4);
+                const squirrel = this.spawnSquirrelAtExact(nearPos.x, this.player.position.y, nearPos.z);
+                spawned = !!squirrel;
+            }
+        }
+        console.log(`[Spawn] Requested ${count} squirrels; now have ${this.squirrels.length}.`);
+    }
+
     spawnPigmanAt(x, z) {
         if (!this.world) return null;
         let surfaceY = this.world.getTerrainHeight(Math.floor(x), Math.floor(z));
@@ -5267,6 +5673,19 @@ class Game {
         console.log('Phinox recalled to inventory!');
     }
 
+    updateSquirrels(deltaTime) {
+        if (!this.squirrels || this.squirrels.length === 0) return;
+        // Update every frame for lively behavior
+        const startTime = performance.now();
+        for (const squirrel of this.squirrels) {
+            squirrel.update(this.world, this.player, deltaTime);
+        }
+        const elapsed = performance.now() - startTime;
+        if (elapsed > 30) {
+            console.log(`[PERF] updateSquirrels took ${elapsed.toFixed(2)}ms (${this.squirrels.length} squirrels)`);
+        }
+    }
+
     updatePigmen(deltaTime) {
         if (!this.pigmen || this.pigmen.length === 0) return;
         // Throttle: update every 3rd frame for performance
@@ -5352,6 +5771,102 @@ class Game {
         const elapsed = performance.now() - start;
         if (elapsed > 50) {
             console.warn(`[PERF] updateSlimes took ${elapsed.toFixed(2)}ms (${this.slimes.length} slimes)`);
+        }
+    }
+
+    refreshMobPopulation() {
+        if (!this.player || !this.world) return;
+        
+        const DESPAWN_DISTANCE = 100; // Despawn mobs beyond this distance
+        const TARGET_PIGMEN = 8;
+        const TARGET_SLIMES = 5;
+        const TARGET_SQUIRRELS = 5;
+        
+        // Despawn and count pigmen
+        let pigmenToRemove = [];
+        for (let i = 0; i < this.pigmen.length; i++) {
+            const pig = this.pigmen[i];
+            const dist = pig.position.distanceTo(this.player.position);
+            if (dist > DESPAWN_DISTANCE) {
+                if (pig.mesh && this.scene) {
+                    this.scene.remove(pig.mesh);
+                }
+                pigmenToRemove.push(i);
+            }
+        }
+        // Remove in reverse order to maintain indices
+        for (let i = pigmenToRemove.length - 1; i >= 0; i--) {
+            this.pigmen.splice(pigmenToRemove[i], 1);
+        }
+        
+        // Spawn new pigmen if below target
+        if (this.pigmen.length < TARGET_PIGMEN) {
+            const toSpawn = TARGET_PIGMEN - this.pigmen.length;
+            for (let i = 0; i < toSpawn; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const radius = 30 + Math.random() * 30;
+                const rx = this.player.position.x + Math.cos(angle) * radius;
+                const rz = this.player.position.z + Math.sin(angle) * radius;
+                this.spawnPigmanAt(rx, rz);
+            }
+        }
+        
+        // Despawn and count slimes
+        let slimesToRemove = [];
+        for (let i = 0; i < this.slimes.length; i++) {
+            const slime = this.slimes[i];
+            const dist = slime.position.distanceTo(this.player.position);
+            if (dist > DESPAWN_DISTANCE) {
+                if (slime.mesh && this.scene) {
+                    this.scene.remove(slime.mesh);
+                }
+                slimesToRemove.push(i);
+            }
+        }
+        // Remove in reverse order
+        for (let i = slimesToRemove.length - 1; i >= 0; i--) {
+            this.slimes.splice(slimesToRemove[i], 1);
+        }
+        
+        // Spawn new slimes if below target
+        if (this.slimes.length < TARGET_SLIMES) {
+            const toSpawn = TARGET_SLIMES - this.slimes.length;
+            for (let i = 0; i < toSpawn; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const radius = 25 + Math.random() * 35;
+                const rx = this.player.position.x + Math.cos(angle) * radius;
+                const rz = this.player.position.z + Math.sin(angle) * radius;
+                this.spawnSlimeAt(rx, rz);
+            }
+        }
+        
+        // Despawn and count squirrels
+        let squirrelsToRemove = [];
+        for (let i = 0; i < this.squirrels.length; i++) {
+            const squirrel = this.squirrels[i];
+            const dist = squirrel.position.distanceTo(this.player.position);
+            if (dist > DESPAWN_DISTANCE) {
+                if (squirrel.mesh && this.scene) {
+                    this.scene.remove(squirrel.mesh);
+                }
+                squirrelsToRemove.push(i);
+            }
+        }
+        // Remove in reverse order
+        for (let i = squirrelsToRemove.length - 1; i >= 0; i--) {
+            this.squirrels.splice(squirrelsToRemove[i], 1);
+        }
+        
+        // Spawn new squirrels if below target
+        if (this.squirrels.length < TARGET_SQUIRRELS) {
+            const toSpawn = TARGET_SQUIRRELS - this.squirrels.length;
+            for (let i = 0; i < toSpawn; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const radius = 20 + Math.random() * 40;
+                const rx = this.player.position.x + Math.cos(angle) * radius;
+                const rz = this.player.position.z + Math.sin(angle) * radius;
+                this.spawnSquirrelAt(rx, rz);
+            }
         }
     }
 
@@ -8582,6 +9097,10 @@ class Game {
         // Optional: Despawn all pigmen/minotaurs
         grid.appendChild(makeBtn('Despawn All Mobs', () => {
             // Remove pigmen
+            if (this.squirrels && this.scene) {
+                this.squirrels.forEach(s => { if (s.mesh) this.scene.remove(s.mesh); });
+                this.squirrels = [];
+            }
             if (this.pigmen && this.scene) {
                 this.pigmen.forEach(p => { if (p.mesh) this.scene.remove(p.mesh); });
                 this.pigmen = [];
@@ -9742,9 +10261,13 @@ class Game {
             
             // Update player
             this.player.update(this.world, deltaTime);
+            // Update creatures
+            this.updateSquirrels(deltaTime);
             // Update hostile mobs
             this.updatePigmen(deltaTime);
             this.updateSlimes(deltaTime);
+            // Refresh mob population - despawn far ones, spawn near ones
+            this.refreshMobPopulation();
             if (this.pigmanPriest && !this.pigmanPriest.isDead) {
                 this.pigmanPriest.update(this.world, this.player, deltaTime);
             }
