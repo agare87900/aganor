@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GameTest - Web Edition</title>
+    <title>Agmora - Web Edition</title>
     <link rel="icon" href="data:image/x-icon;base64,AAABAAEAEBAQAAEABACoBAAA"> 
     <style>
         * {
@@ -86,6 +86,29 @@
             font-family: monospace;
             max-width: 300px;
         }
+
+        #coords-hud {
+            position: absolute;
+            bottom: 70px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.65);
+            border: 1px solid rgba(255,255,255,0.18);
+            border-radius: 8px;
+            padding: 6px 18px;
+            font-family: monospace;
+            font-size: 14px;
+            color: #fff;
+            pointer-events: none;
+            z-index: 10;
+            display: flex;
+            gap: 18px;
+            letter-spacing: 0.03em;
+        }
+        #coords-hud span { opacity: 0.7; margin-right: 3px; }
+        #coords-hud .cx { color: #ff6b6b; }
+        #coords-hud .cy { color: #6bffb8; }
+        #coords-hud .cz { color: #6bb3ff; }
 
         #crosshair {
             position: absolute;
@@ -223,6 +246,12 @@
         <div>Blocks: <span id="blocks">0</span></div>
     </div>
 
+    <div id="coords-hud">
+        <div><span class="cx">X</span><strong id="hud-x">0</strong></div>
+        <div><span class="cy">Y</span><strong id="hud-y">0</strong></div>
+        <div><span class="cz">Z</span><strong id="hud-z">0</strong></div>
+    </div>
+
     <div id="controls">
         <div><strong>Controls</strong></div>
         <div>WASD - Move</div>
@@ -252,6 +281,8 @@
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://unpkg.com/three@r128/examples/js/loaders/GLTFLoader.js"></script>
+    <!-- Socket.IO client (served by the Node server when available) -->
+    <script src="/socket.io/socket.io.js"></script>
     <script src="game.js"></script>
     <script>
     // Hook up connect button to call into game for WebSocket

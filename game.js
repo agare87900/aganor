@@ -1,4 +1,4 @@
-// game-test - Web Edition
+// Agmora - Web Edition
 // voxel game in WebGL using Three.js
 
 console.log('game.js loaded');
@@ -475,6 +475,9 @@ class VoxelWorld {
         // Carve dungeon/maze near spawn
         this.carveDungeonInChunk(chunk, cx, cz, dungeonEntryHeight !== null ? dungeonEntryHeight : this.getTerrainHeight(0, 0));
 
+        // Build desert pyramid (only in default world)
+        this.buildPyramidInChunk(chunk, cx, cz);
+
         return chunk;
     }
 
@@ -596,6 +599,148 @@ class VoxelWorld {
                             chunk.playerModified = true;
 
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Desert Pyramid at world center (300, ?, 300)
+    // Exterior: 5-step sand pyramid (200×200 base) with 128×128 grand
+    // chamber carved inside.  Underground maze below with a staircase
+    // connecting the two.
+    // ---------------------------------------------------------------
+    buildPyramidInChunk(chunk, cx, cz) {
+        const PX = 300;  // pyramid center world X
+        const PZ = 300;  // pyramid center world Z
+        const PYRAMID_MIN_X = PX - 64;
+        const PYRAMID_MAX_X = PX + 63;
+        const PYRAMID_MIN_Z = PZ - 64;
+        const PYRAMID_MAX_Z = PZ + 63;
+
+        const cMinX = cx * this.chunkSize;
+        const cMaxX = cMinX + this.chunkSize - 1;
+        const cMinZ = cz * this.chunkSize;
+        const cMaxZ = cMinZ + this.chunkSize - 1;
+
+        // Quick-reject chunks outside the pyramid footprint
+        if (cMaxX < PYRAMID_MIN_X || cMinX > PYRAMID_MAX_X) return;
+        if (cMaxZ < PYRAMID_MIN_Z || cMinZ > PYRAMID_MAX_Z) return;
+
+        const baseY = this.getTerrainHeight(PX, PZ); // surface height at center
+
+        // Step pyramid layers: [minX, maxX, minZ, maxZ, yMin, yMax]
+        // Base footprint is exactly 128x128 blocks.
+        const pyLayers = [
+            [PX - 64, PX + 63, PZ - 64, PZ + 63, baseY,      baseY + 9 ],
+            [PX - 48, PX + 47, PZ - 48, PZ + 47, baseY + 10, baseY + 19],
+            [PX - 32, PX + 31, PZ - 32, PZ + 31, baseY + 20, baseY + 29],
+            [PX - 16, PX + 15, PZ - 16, PZ + 15, baseY + 30, baseY + 39],
+            [PX - 8,  PX + 7,  PZ - 8,  PZ + 7,  baseY + 40, baseY + 47],
+        ];
+
+        // Upper room: exactly 55x55 blocks, centered inside the pyramid.
+        const CHAM_MIN_X = PX - 27;
+        const CHAM_MAX_X = PX + 27;
+        const CHAM_MIN_Z = PZ - 27;
+        const CHAM_MAX_Z = PZ + 27;
+        const CHAM_BOT = baseY + 1;
+        const CHAM_TOP = baseY + 8;
+
+        // Underground maze: exactly 128x128 blocks below the pyramid.
+        const MAZE_MIN_X    = PX - 64;
+        const MAZE_MAX_X    = PX + 63;
+        const MAZE_MIN_Z    = PZ - 64;
+        const MAZE_MAX_Z    = PZ + 63;
+        const MAZE_FLOOR_Y  = baseY - 20; // stone floor of maze
+        const MAZE_WALL_TOP = baseY - 1;  // top wall block
+        const MAZE_AIR_BOT  = baseY - 19; // bottom walkable air
+        const MAZE_AIR_TOP  = baseY - 2;  // top walkable air (3 tall corridor)
+
+        for (let lx = 0; lx < this.chunkSize; lx++) {
+            for (let lz = 0; lz < this.chunkSize; lz++) {
+                const wx = cx * this.chunkSize + lx;
+                const wz = cz * this.chunkSize + lz;
+                const inPyramid = wx >= PYRAMID_MIN_X && wx <= PYRAMID_MAX_X && wz >= PYRAMID_MIN_Z && wz <= PYRAMID_MAX_Z;
+                const inChamber = wx >= CHAM_MIN_X && wx <= CHAM_MAX_X && wz >= CHAM_MIN_Z && wz <= CHAM_MAX_Z;
+                const inMaze = wx >= MAZE_MIN_X && wx <= MAZE_MAX_X && wz >= MAZE_MIN_Z && wz <= MAZE_MAX_Z;
+
+                // ── 1. Pyramid exterior ──────────────────────────────
+                for (const [minX, maxX, minZ, maxZ, yMin, yMax] of pyLayers) {
+                    if (wx >= minX && wx <= maxX && wz >= minZ && wz <= maxZ) {
+                        for (let y = yMin; y <= yMax && y < this.chunkHeight; y++) {
+                            if (y < 0) continue;
+                            const carveChamber = y >= CHAM_BOT && y <= CHAM_TOP && inChamber;
+                            chunk.blocks[this.getBlockIndex(lx, y, lz)] = carveChamber ? 0 : 4;
+                        }
+                    }
+                }
+
+                // ── 2. Flatten & sand-fill terrain under the pyramid base
+                if (inPyramid) {
+                    for (let y = Math.max(0, baseY - 6); y < baseY; y++) {
+                        chunk.blocks[this.getBlockIndex(lx, y, lz)] = 4; // sand
+                    }
+                }
+
+                // ── 3. Underground maze ──────────────────────────────
+                if (inMaze) {
+                    // Stone floor
+                    if (MAZE_FLOOR_Y >= 0 && MAZE_FLOOR_Y < this.chunkHeight) {
+                        chunk.blocks[this.getBlockIndex(lx, MAZE_FLOOR_Y, lz)] = 3;
+                    }
+                    // Stone ceiling (connects to pyramid underside)
+                    if (MAZE_WALL_TOP >= 0 && MAZE_WALL_TOP < this.chunkHeight) {
+                        chunk.blocks[this.getBlockIndex(lx, MAZE_WALL_TOP, lz)] = 3;
+                    }
+
+                    // Grid maze: corridors every 10 blocks, 2 blocks wide
+                    const relX = ((wx - PX) % 10 + 10) % 10;
+                    const relZ = ((wz - PZ) % 10 + 10) % 10;
+                    const isCorridor = relX <= 1 || relZ <= 1;
+
+                    for (let y = MAZE_AIR_BOT; y <= MAZE_AIR_TOP && y < this.chunkHeight; y++) {
+                        if (y < 0) continue;
+                        chunk.blocks[this.getBlockIndex(lx, y, lz)] = isCorridor ? 0 : 3;
+                    }
+                }
+
+                // ── 4. Entrance opening on south WALL
+                //       Vertical 2x2 doorway (2 wide in X, 2 tall in Y) punched
+                //       through every sand layer at z = PYRAMID_MAX_Z so you
+                //       walk straight in from outside into the maze corridor.
+                if (wx >= PX - 1 && wx <= PX && wz === PYRAMID_MAX_Z) {
+                    for (let y = baseY; y <= baseY + 1 && y < this.chunkHeight; y++) {
+                        if (y >= 0) chunk.blocks[this.getBlockIndex(lx, y, lz)] = 0;
+                    }
+                }
+
+                // ── 5. Staircase from maze to grand chamber ──────────
+                //       Runs along x = PX, z from (PZ - 18) up to (PZ),
+                //       each z step rises ~1 block in y.
+                if (wx >= PX - 1 && wx <= PX + 1) {
+                    const stairZMin = PZ - 18;
+                    const stairZMax = PZ;
+                    if (wz >= stairZMin && wz <= stairZMax) {
+                        const t = (wz - stairZMin) / (stairZMax - stairZMin); // 0..1
+                        const stepY = Math.round(MAZE_AIR_BOT + t * (CHAM_BOT - MAZE_AIR_BOT));
+                        // Sand step block at stepY, air above for head room
+                        for (let y = Math.max(0, stepY); y <= Math.min(stepY + 3, this.chunkHeight - 1); y++) {
+                            chunk.blocks[this.getBlockIndex(lx, y, lz)] = (y === stepY) ? 4 : 0;
+                        }
+                    }
+                }
+
+                // ── 6. A torch every 20 blocks inside maze corridors ─
+                //       (placed at y = MAZE_AIR_BOT + 2 so the flame is
+                //        at eye level in the 3-tall corridor)
+                if (inMaze) {
+                    const relX = ((wx - PX) % 20 + 20) % 20;
+                    const relZ = ((wz - PZ) % 20 + 20) % 20;
+                    const torchY = MAZE_AIR_BOT + 2;
+                    if (relX === 0 && relZ === 0 && torchY >= 0 && torchY < this.chunkHeight) {
+                        chunk.blocks[this.getBlockIndex(lx, torchY, lz)] = 25; // torch
                     }
                 }
             }
@@ -919,7 +1064,8 @@ class VoxelWorld {
             27,             // mana orb (placeable block)
             29,             // magic candle
             33,             // grim stone (fairia)
-            34              // lava
+            34,             // lava
+            40              // TNT
         ]);
         return placeable.has(blockType);
     }
@@ -985,7 +1131,8 @@ class BlockMesher {
             30: { x: 2, y: 0 },     // Chisel uses stone tile
             31: { x: 1, y: 2 },     // Cloud Pillow uses snow tile
             33: { x: 2, y: 0 },     // Grim Stone (use stone texture)
-            34: { x: 0, y: 1 }      // Lava (use water texture as placeholder)
+            34: { x: 0, y: 1 },     // Lava (use water texture as placeholder)
+            40: { x: 3, y: 1 }      // TNT (reuse ruby tile – red)
         };
         
         this.textureGridSize = 4; // 4x4 grid in atlas
@@ -1553,7 +1700,14 @@ class Player {
             boots: 0,
             mainHand: 0,
             offHand: 0,
-            tool: 0
+            tool: 0,
+            accessory1: 0,
+            accessory2: 0,
+            accessory3: 0,
+            accessory4: 0,
+            accessory5: 0,
+            accessory6: 0,
+            accessory7: 0
         };
         
         // In survival mode, start with empty inventory - must break blocks to collect them
@@ -2038,8 +2192,8 @@ class Player {
     }
 }
 
-class Pigman {
-    constructor(position = new THREE.Vector3(), survivalMode = false, pigmanTexture = null, gameInstance = null) {
+class piggron {
+    constructor(position = new THREE.Vector3(), survivalMode = false, piggronTexture = null, gameInstance = null) {
         this.position = position.clone();
         this.game = gameInstance; // Store game reference for model access
         this.yaw = 0;
@@ -2052,7 +2206,7 @@ class Pigman {
         this.jumpCooldown = 350; // ms
         this.lastJumpTime = 0;
         this.mesh = null;
-        this.pigmanTexture = pigmanTexture; // Store texture reference
+        this.piggronTexture = piggronTexture; // Store texture reference
         
         // Survival mode
         this.survivalMode = survivalMode;
@@ -2074,9 +2228,9 @@ class Pigman {
 
     createMesh() {
         // Try to use the loaded 3D model if available
-        if (this.game && this.game.pigmanModelTemplate) {
-            console.log('[Pigman] Using 3D model for pigman');
-            const group = this.game.pigmanModelTemplate.clone();
+        if (this.game && this.game.piggronModelTemplate) {
+            console.log('[piggron] Using 3D model for piggron');
+            const group = this.game.piggronModelTemplate.clone();
             group.position.copy(this.position);
             this.mesh = group;
             
@@ -2094,14 +2248,14 @@ class Pigman {
             return group;
         }
         
-        console.log('[Pigman] 3D model not available yet, using fallback. game:', !!this.game, 'template:', this.game ? !!this.game.pigmanModelTemplate : 'N/A');
+        console.log('[piggron] 3D model not available yet, using fallback. game:', !!this.game, 'template:', this.game ? !!this.game.piggronModelTemplate : 'N/A');
 
         // Fallback to box geometry if model not loaded
         const group = new THREE.Group();
 
-        // Use pigman texture if available, otherwise use solid colors
-        const skin = this.pigmanTexture ? 
-            new THREE.MeshLambertMaterial({ map: this.pigmanTexture }) :
+        // Use piggron texture if available, otherwise use solid colors
+        const skin = this.piggronTexture ? 
+            new THREE.MeshLambertMaterial({ map: this.piggronTexture }) :
             new THREE.MeshLambertMaterial({ color: 0xd28a7c });
         const cloth = new THREE.MeshLambertMaterial({ color: 0x444444 });
 
@@ -2254,7 +2408,7 @@ class Pigman {
                 }
                 this.nextWanderChange = nowMove + 1500 + Math.random() * 2000;
                 const wanderElapsed = performance.now() - wanderStart;
-                if (wanderElapsed > 10) console.log(`[PERF] Pigman wander change took ${wanderElapsed.toFixed(2)}ms`);
+                if (wanderElapsed > 10) console.log(`[PERF] piggron wander change took ${wanderElapsed.toFixed(2)}ms`);
             }
             horizontal.copy(this.wanderDir);
         }
@@ -2401,7 +2555,7 @@ class Pigman {
         
         const totalElapsed = performance.now() - debugStart;
         if (totalElapsed > 20) {
-            console.warn(`[PERF] Pigman.update() took ${totalElapsed.toFixed(2)}ms`);
+            console.warn(`[PERF] piggron.update() took ${totalElapsed.toFixed(2)}ms`);
         }
     }
 
@@ -2410,7 +2564,7 @@ class Pigman {
         
         this.health = Math.max(0, this.health - amount);
         this.isAggressive = true; // Become aggressive when hit
-        console.log(`Pigman took ${amount} damage! Health: ${this.health}/${this.maxHealth}`);
+        console.log(`piggron took ${amount} damage! Health: ${this.health}/${this.maxHealth}`);
         
         // Apply red flash effect for 200ms
         const now = performance.now ? performance.now() : Date.now();
@@ -2426,18 +2580,18 @@ class Pigman {
         
         if (this.health <= 0) {
             this.isDead = true;
-            console.log('Pigman died!');
+            console.log('piggron died!');
             return true; // Died
         }
         return false; // Still alive
     }
 }
 
-class PigmanPriest {
+class piggronPriest {
     constructor(position = new THREE.Vector3(), survivalMode = false) {
         this.position = position.clone();
         this.yaw = 0;
-        this.speed = 0.06; // Slower than regular pigman
+        this.speed = 0.06; // Slower than regular piggron
         this.velocity = new THREE.Vector3(0, 0, 0);
         this.gravity = 0.015;
         this.size = { halfX: 0.4, halfY: 0.9, halfZ: 0.4 }; // Larger
@@ -2646,7 +2800,7 @@ class PigmanPriest {
         if (this.health < this.maxHealth && now - this.lastHealTime >= this.healCooldown) {
             this.health = Math.min(this.maxHealth, this.health + this.healAmount);
             this.lastHealTime = now;
-            console.log(`Pigman Priest healed! Health: ${this.health}/${this.maxHealth}`);
+            console.log(`piggron Priest healed! Health: ${this.health}/${this.maxHealth}`);
         }
 
         // Simple collision
@@ -2711,7 +2865,7 @@ class PigmanPriest {
                 if (now - this.lastAttackTime >= this.attackCooldown) {
                     targetPlayer.takeDamage(this.attackDamage, this);
                     this.lastAttackTime = now;
-                    console.log('Pigman Priest attacked!');
+                    console.log('piggron Priest attacked!');
                 }
             }
         }
@@ -2757,7 +2911,7 @@ class PigmanPriest {
         if (!this.survivalMode || this.isDead) return false;
         
         this.health = Math.max(0, this.health - amount);
-        console.log(`Pigman Priest took ${amount} damage! Health: ${this.health}/${this.maxHealth}`);
+        console.log(`piggron Priest took ${amount} damage! Health: ${this.health}/${this.maxHealth}`);
         
         const now = performance.now ? performance.now() : Date.now();
         this.damageFlashUntil = now + 200;
@@ -2771,7 +2925,7 @@ class PigmanPriest {
         
         if (this.health <= 0) {
             this.isDead = true;
-            console.log('Pigman Priest defeated!');
+            console.log('piggron Priest defeated!');
             return true;
         }
         return false;
@@ -3293,7 +3447,7 @@ class Minutor {
         this.speed = 0.07; // Slow but powerful
         this.velocity = new THREE.Vector3(0, 0, 0);
         this.gravity = 0.015;
-        this.size = { halfX: 0.4, halfY: 0.9, halfZ: 0.4 }; // Larger than Pigman
+        this.size = { halfX: 0.4, halfY: 0.9, halfZ: 0.4 }; // Larger than piggron
         this.onGround = false;
         this.jumpPower = 0.3;
         this.jumpCooldown = 300; // ms
@@ -3308,7 +3462,7 @@ class Minutor {
         this.attackDamage = 15;
         this.attackCooldown = 1200; // ms between attacks
         this.lastAttackTime = 0;
-        this.isAggressive = true; // Always aggressive (unlike Pigman)
+        this.isAggressive = true; // Always aggressive (unlike piggron)
         this.wanderDir = new THREE.Vector3(0, 0, 0);
         this.nextWanderChange = 0;
         this.wanderSpeed = 0.04;
@@ -3930,6 +4084,7 @@ class DroppedItem {
                 32: '#FFD700', // Golden Sword (gold)
                 33: '#2c2c2c', // Grim Stone (very dark gray)
                 34: '#FF4500', // Lava (orange-red)
+                40: '#FF0000', // TNT (red)
                 35: '#FFB6C1', // Smiteth Scroll (light pink)
                 36: '#1a1a2e'  // Gloom (very dark blue/black)
             };
@@ -4071,7 +4226,7 @@ class Projectile {
         // entity collision (pigmen, priests, minutors)
         const hits = [];
         if (game.pigmen && game.pigmen.length) hits.push(...game.pigmen);
-        if (game.pigmanPriest && !game.pigmanPriest.isDead) hits.push(game.pigmanPriest);
+        if (game.piggronPriest && !game.piggronPriest.isDead) hits.push(game.piggronPriest);
         if (game.minutors && game.minutors.length) hits.push(...game.minutors);
         if (game.slimes && game.slimes.length) hits.push(...game.slimes);
         for (const ent of hits) {
@@ -4222,24 +4377,35 @@ class Game {
         this.survivalMode = survivalMode;
         this.customPlayerColor = playerColor; // Store custom color
         
-        // Game music setup (plays randomly)
+        // Game music setup
         this.gameMusic = new Audio('Posey.ogg');
-        this.gameMusic.volume = 0.5;
-        this.gameMusic.addEventListener('ended', () => {
-            // Play again after a random delay (30-120 seconds)
-            const delay = 30000 + Math.random() * 90000;
-            setTimeout(() => {
-                this.gameMusic.play().catch(e => console.log('Game music play failed:', e));
-            }, delay);
+        this.gameMusic.preload = 'auto';
+        this.gameMusic.volume = 0.65;
+        this.gameMusic.muted = false;
+        this.gameMusic.loop = true;
+        this._currentMusicTrack = 'Posey.ogg';
+        this.audioUnlocked = false;
+        this.lastAudioEnsureTime = 0;
+
+        // Browser autoplay can block media until user interaction.
+        this.musicUnlockHandler = () => {
+            this.audioUnlocked = true;
+            this.gameMusic.muted = false;
+            if (this.gameMusic.volume < 0.65) this.gameMusic.volume = 0.65;
+            this.gameMusic.play().catch(e => console.log('Game music unlock play failed:', e));
+        };
+        window.addEventListener('pointerdown', this.musicUnlockHandler, { once: true });
+        window.addEventListener('keydown', this.musicUnlockHandler, { once: true });
+        window.addEventListener('touchstart', this.musicUnlockHandler, { once: true });
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) this.ensureAudioRunning();
         });
-        // Start playing after a short delay
-        setTimeout(() => {
-            this.gameMusic.play().catch(e => console.log('Game music play failed:', e));
-        }, 5000);
 
         // Sound effects
-        this.musketSound = new Audio('musket.mp3');
+        this.musketSound = new Audio('Musket.mp3');
         this.musketSound.volume = 0.7; // a bit louder than UI clicks
+        this.explosionSound = new Audio('Explotion.ogg');
+        this.explosionSound.volume = 0.85;
 
         
         // Block type to name mapping
@@ -4251,6 +4417,8 @@ class Game {
         // users can obtain it via the block picker.
         const MUSKET_TYPE = 37;
         const SLIME_TYPE = 38;
+        const MAN_POSTER_TYPE = 39;
+        const TNT_TYPE = 40;
 
         this.blockNames = {
             0: 'Air',
@@ -4291,12 +4459,18 @@ class Game {
             35: 'Smiteth Scroll',
             36: 'Gloom',
             [MUSKET_TYPE]: 'Musket',  // new weapon
-            [SLIME_TYPE]: 'Slime'    // dropped by slain slimes
+            [SLIME_TYPE]: 'Slime',    // dropped by slain slimes
+            [MAN_POSTER_TYPE]: 'Man Poster',
+            [TNT_TYPE]: 'TNT',
+            41: 'Map'
         };
 
         // push constants onto game instance so other methods can refer to them
         this.MUSKET_TYPE = MUSKET_TYPE;
         this.SLIME_TYPE = SLIME_TYPE;
+        this.MAN_POSTER_TYPE = MAN_POSTER_TYPE;
+        this.TNT_TYPE = TNT_TYPE;
+        this.MAP_TYPE = 41;
         
         // Lair system - hierarchical organization of items
         this.lairs = {
@@ -4475,9 +4649,9 @@ class Game {
                 const py = this.player.position.y;
                 const pz = this.player.position.z + Math.sin(angle) * radius;
                 
-                console.log(`[Init] Attempting pigman spawn ${i + 1} at (${px.toFixed(1)}, ${py.toFixed(1)}, ${pz.toFixed(1)})`);
-                const pig = this.spawnPigmanAtExact(px, py, pz);
-                console.log(`[Init] Pigman spawn ${i + 1} result:`, pig ? 'SUCCESS' : 'FAILED');
+                console.log(`[Init] Attempting piggron spawn ${i + 1} at (${px.toFixed(1)}, ${py.toFixed(1)}, ${pz.toFixed(1)})`);
+                const pig = this.spawnpiggronAtExact(px, py, pz);
+                console.log(`[Init] piggron spawn ${i + 1} result:`, pig ? 'SUCCESS' : 'FAILED');
 
                 // also spawn a slime nearby for variety
                 const sangle = Math.random() * Math.PI * 2;
@@ -4501,7 +4675,7 @@ class Game {
             }
             console.log(`[Init] Total pigmen after force-spawn: ${this.pigmen.length}, slimes: ${this.slimes.length}, squirrels: ${this.squirrels.length}`);
         }, 1500);
-        this.pigmanPriest = null; // Boss mob
+        this.piggronPriest = null; // Boss mob
         this.minutors = [];
         this.spawnMinutors(2); // Spawn 2 Minutors in the maze
         
@@ -4535,6 +4709,31 @@ class Game {
         this.openChestPos = null; // Currently open chest position as 'x,y,z'
         this.candleStorage = new Map(); // Map of 'x,y,z' -> [3 slots] for magic candles
         this.opencandlePos = null; // Currently open candle position
+        this.paintings = []; // [{mesh, backX, backY, backZ}] — placed Man Poster paintings
+        this.manPosterTexture = null; // loaded in loadTextureAtlas
+        this.primedTNT = new Map(); // key -> {x,y,z,mesh,startMs}
+
+        // Minimap UI (shown when Map accessory is equipped)
+        const minimapWrap = document.createElement('div');
+        minimapWrap.style.cssText = 'position:fixed;top:16px;right:16px;width:208px;background:#0a0a0a;border:2px solid #555;border-radius:6px;z-index:50;display:none;padding:4px;box-sizing:border-box;';
+        const minimapTitle = document.createElement('div');
+        minimapTitle.textContent = 'Map';
+        minimapTitle.style.cssText = 'color:#fff;font:bold 11px monospace;text-align:center;margin-bottom:2px;letter-spacing:1px;';
+        minimapWrap.appendChild(minimapTitle);
+        const minimapCanvas = document.createElement('canvas');
+        minimapCanvas.width = 200;
+        minimapCanvas.height = 200;
+        minimapCanvas.style.cssText = 'display:block;width:200px;height:200px;';
+        minimapWrap.appendChild(minimapCanvas);
+        document.body.appendChild(minimapWrap);
+        this._minimapEl = minimapWrap;
+        this._minimapCanvas = minimapCanvas;
+        this._minimapFrame = 0;
+        this.discoveredChunks = {
+            default: new Set(),
+            fairia: new Set(),
+            astral: new Set()
+        };
         this.pendingBreak = null; // Track pending delayed block break
         this.crosshairProgress = 0; // Last rendered crosshair fill
         this.inAstralDimension = false; // Are we in the astral dimension?
@@ -4759,9 +4958,9 @@ class Game {
         if (!playerData || this.remotePlayerModels.has(playerData.id)) return;
 
         const group = new THREE.Group();
-        // Use pigman texture if available, otherwise use team color
-        const material = this.pigmanTexture ?
-            new THREE.MeshLambertMaterial({ map: this.pigmanTexture }) :
+        // Use piggron texture if available, otherwise use team color
+        const material = this.piggronTexture ?
+            new THREE.MeshLambertMaterial({ map: this.piggronTexture }) :
             new THREE.MeshLambertMaterial({ color: playerData.team === 'blue' ? 0x3333ff : 0xff3333 });
 
         // Torso
@@ -4860,39 +5059,68 @@ class Game {
             atlasTexture.anisotropy = 1;
             this.textureAtlas = atlasTexture;
             
-            // Load pigman texture separately for character skins
+            // Load man_poster.png for the Man Poster painting
             textureLoader.load(
-                'pigman.png',
+                'man_poster.png',
                 (texture) => {
                     texture.magFilter = THREE.NearestFilter;
                     texture.minFilter = THREE.NearestFilter;
-                    this.pigmanTexture = texture;
-                    console.log('Pigman texture loaded successfully');
+                    this.manPosterTexture = texture;
+                    console.log('man_poster texture loaded successfully');
+                },
+                undefined,
+                () => {
+                    // Fallback: simple colored canvas poster
+                    const fc = document.createElement('canvas');
+                    fc.width = 64; fc.height = 128;
+                    const fctx = fc.getContext('2d');
+                    fctx.fillStyle = '#c8a87a';
+                    fctx.fillRect(0, 0, 64, 128);
+                    fctx.fillStyle = '#5a3a1a';
+                    fctx.strokeStyle = '#5a3a1a';
+                    fctx.lineWidth = 4;
+                    fctx.strokeRect(4, 4, 56, 120);
+                    fctx.fillStyle = '#a0724a';
+                    fctx.fillRect(20, 20, 24, 40); // figure silhouette
+                    this.manPosterTexture = new THREE.CanvasTexture(fc);
+                    this.manPosterTexture.magFilter = THREE.NearestFilter;
+                    this.manPosterTexture.minFilter = THREE.NearestFilter;
+                }
+            );
+
+            // Load piggron texture separately for character skins
+            textureLoader.load(
+                'piggron.png',
+                (texture) => {
+                    texture.magFilter = THREE.NearestFilter;
+                    texture.minFilter = THREE.NearestFilter;
+                    this.piggronTexture = texture;
+                    console.log('piggron texture loaded successfully');
                 },
                 undefined,
                 (error) => {
-                    console.warn('Failed to load pigman texture:', error);
-                    // Create fallback colored canvas for pigman
+                    console.warn('Failed to load piggron texture:', error);
+                    // Create fallback colored canvas for piggron
                     const fallbackCanvas = document.createElement('canvas');
                     fallbackCanvas.width = 64;
                     fallbackCanvas.height = 64;
                     const fallbackCtx = fallbackCanvas.getContext('2d');
-                    fallbackCtx.fillStyle = '#d28a7c'; // Pigman skin color
+                    fallbackCtx.fillStyle = '#d28a7c'; // piggron skin color
                     fallbackCtx.fillRect(0, 0, 64, 64);
-                    this.pigmanTexture = new THREE.CanvasTexture(fallbackCanvas);
-                    this.pigmanTexture.magFilter = THREE.NearestFilter;
-                    this.pigmanTexture.minFilter = THREE.NearestFilter;
+                    this.piggronTexture = new THREE.CanvasTexture(fallbackCanvas);
+                    this.piggronTexture.magFilter = THREE.NearestFilter;
+                    this.piggronTexture.minFilter = THREE.NearestFilter;
                 }
             );
             
-            // Load pigman 3D model
+            // Load piggron 3D model
             if (typeof THREE.GLTFLoader !== 'undefined') {
                 const gltfLoader = new THREE.GLTFLoader();
                 gltfLoader.load(
                     'geo.gltf',
                     (gltf) => {
-                        this.pigmanModelTemplate = gltf.scene;
-                        console.log('✓ Pigman model (geo.gltf) loaded successfully');
+                        this.piggronModelTemplate = gltf.scene;
+                        console.log('✓ piggron model (geo.gltf) loaded successfully');
                         console.log('  Model scene:', gltf.scene);
                         console.log('  Children:', gltf.scene.children.length);
                     },
@@ -4900,13 +5128,13 @@ class Game {
                         console.log('Model loading progress:', Math.round(progress.loaded / progress.total * 100) + '%');
                     },
                     (error) => {
-                        console.error('✗ Failed to load pigman model (geo.gltf):', error);
-                        this.pigmanModelTemplate = null; // Will fall back to box geometry
+                        console.error('✗ Failed to load piggron model (geo.gltf):', error);
+                        this.piggronModelTemplate = null; // Will fall back to box geometry
                     }
                 );
             } else {
                 console.warn('GLTFLoader not available - pigmen will use box geometry');
-                this.pigmanModelTemplate = null;
+                this.piggronModelTemplate = null;
             }
             
             // Create mesher with composite atlas
@@ -5135,10 +5363,10 @@ class Game {
         // Simple low-poly player made from boxes
         const group = new THREE.Group();
 
-        // Use pigman texture if available, otherwise use solid color
+        // Use piggron texture if available, otherwise use solid color
         let material;
-        if (this.pigmanTexture) {
-            material = new THREE.MeshLambertMaterial({ map: this.pigmanTexture });
+        if (this.piggronTexture) {
+            material = new THREE.MeshLambertMaterial({ map: this.piggronTexture });
         } else {
             material = new THREE.MeshLambertMaterial({ color: this.playerColor || 0x4477ff });
         }
@@ -5394,9 +5622,9 @@ class Game {
 
         // model
         const group = new THREE.Group();
-        // Use pigman texture if available, otherwise use team color
-        const material = this.pigmanTexture ?
-            new THREE.MeshLambertMaterial({ map: this.pigmanTexture }) :
+        // Use piggron texture if available, otherwise use team color
+        const material = this.piggronTexture ?
+            new THREE.MeshLambertMaterial({ map: this.piggronTexture }) :
             new THREE.MeshLambertMaterial({ color: team === 'blue' ? 0x3333ff : 0xff3333 });
         const torsoGeo = new THREE.BoxGeometry(0.6, 1.0, 0.4);
         const torso = new THREE.Mesh(torsoGeo, material);
@@ -5498,7 +5726,7 @@ class Game {
         console.log(`[Spawn] Requested ${count} squirrels; now have ${this.squirrels.length}.`);
     }
 
-    spawnPigmanAt(x, z) {
+    spawnpiggronAt(x, z) {
         if (!this.world) return null;
         let surfaceY = this.world.getTerrainHeight(Math.floor(x), Math.floor(z));
         // If below water, clamp to water surface so spawn still succeeds
@@ -5507,46 +5735,46 @@ class Game {
         }
 
         const pos = new THREE.Vector3(x + 0.5, surfaceY + 1.1, z + 0.5);
-        const pig = new Pigman(pos, this.survivalMode, this.pigmanTexture, this);
+        const pig = new piggron(pos, this.survivalMode, this.piggronTexture, this);
         const mesh = pig.createMesh();
         if (mesh) this.scene.add(mesh);
         this.pigmen.push(pig);
-        console.log(`[Spawn] Pigman at (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})`);
+        console.log(`[Spawn] piggron at (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})`);
         return pig;
     }
 
-    // Spawn Pigman at exact coordinates (bypasses terrain height), useful for creative menu
-    spawnPigmanAtExact(x, y, z) {
-        console.log(`[spawnPigmanAtExact] Called with (${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)})`);
-        console.log(`[spawnPigmanAtExact] Scene exists:`, !!this.scene);
+    // Spawn piggron at exact coordinates (bypasses terrain height), useful for creative menu
+    spawnpiggronAtExact(x, y, z) {
+        console.log(`[spawnpiggronAtExact] Called with (${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)})`);
+        console.log(`[spawnpiggronAtExact] Scene exists:`, !!this.scene);
         
         if (!this.scene) {
-            console.error('[spawnPigmanAtExact] No scene available!');
+            console.error('[spawnpiggronAtExact] No scene available!');
             return null;
         }
         
         try {
             const pos = new THREE.Vector3(x, y, z);
-            console.log(`[spawnPigmanAtExact] Creating Pigman instance...`);
-            const pig = new Pigman(pos, this.survivalMode, this.pigmanTexture, this);
+            console.log(`[spawnpiggronAtExact] Creating piggron instance...`);
+            const pig = new piggron(pos, this.survivalMode, this.piggronTexture, this);
             
-            console.log(`[spawnPigmanAtExact] Creating mesh...`);
+            console.log(`[spawnpiggronAtExact] Creating mesh...`);
             const mesh = pig.createMesh();
-            console.log(`[spawnPigmanAtExact] Mesh created:`, !!mesh);
+            console.log(`[spawnpiggronAtExact] Mesh created:`, !!mesh);
             
             if (mesh) {
                 this.scene.add(mesh);
-                console.log(`[spawnPigmanAtExact] Mesh added to scene`);
+                console.log(`[spawnpiggronAtExact] Mesh added to scene`);
             } else {
-                console.error(`[spawnPigmanAtExact] Mesh creation returned null!`);
+                console.error(`[spawnpiggronAtExact] Mesh creation returned null!`);
                 return null;
             }
             
             this.pigmen.push(pig);
-            console.log(`[Spawn] Pigman (exact) at (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}) - Total: ${this.pigmen.length}`);
+            console.log(`[Spawn] piggron (exact) at (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}) - Total: ${this.pigmen.length}`);
             return pig;
         } catch (error) {
-            console.error('[spawnPigmanAtExact] Error during spawn:', error);
+            console.error('[spawnpiggronAtExact] Error during spawn:', error);
             return null;
         }
     }
@@ -5562,14 +5790,14 @@ class Game {
                 const r = Math.random() * radius * 0.8;
                 const rx = this.player.position.x + Math.cos(angle) * r;
                 const rz = this.player.position.z + Math.sin(angle) * r;
-                const pig = this.spawnPigmanAt(rx, rz);
+                const pig = this.spawnpiggronAt(rx, rz);
                 spawned = !!pig;
             }
             // Fallback: spawn near player if random attempts failed
             if (!spawned && this.player) {
                 const forward = new THREE.Vector3(Math.sin(this.player.yaw), 0, Math.cos(this.player.yaw));
                 const nearPos = this.player.position.clone().addScaledVector(forward, 3);
-                const pig = this.spawnPigmanAtExact(nearPos.x, this.player.position.y, nearPos.z);
+                const pig = this.spawnpiggronAtExact(nearPos.x, this.player.position.y, nearPos.z);
                 spawned = !!pig;
             }
         }
@@ -5593,7 +5821,7 @@ class Game {
                 if (surfaceY > 50) { // Valid spawn height
                     valid = true;
                     const pos = new THREE.Vector3(rx + 0.5, surfaceY + 1.1, rz + 0.5);
-                    const pig = new Pigman(pos, this.survivalMode, this.pigmanTexture, this);
+                    const pig = new piggron(pos, this.survivalMode, this.piggronTexture, this);
                     const mesh = pig.createMesh();
                     if (mesh) this.scene.add(mesh);
                     this.pigmen.push(pig);
@@ -5603,14 +5831,14 @@ class Game {
         console.log(`Spawned ${count} pigmen around astral cathedral`);
     }
 
-    spawnPigmanPriest() {
+    spawnpiggronPriest() {
         if (!this.world || !this.scene) return;
         // Spawn priest on top of the podium (podium is at y: 74-76, center z: 11, x: -5 to 5)
         const pos = new THREE.Vector3(0, 77.5, 11);
-        this.pigmanPriest = new PigmanPriest(pos, this.survivalMode);
-        const mesh = this.pigmanPriest.createMesh();
+        this.piggronPriest = new piggronPriest(pos, this.survivalMode);
+        const mesh = this.piggronPriest.createMesh();
         if (mesh) this.scene.add(mesh);
-        console.log('Spawned Pigman Priest boss in astral cathedral!');
+        console.log('Spawned piggron Priest boss in astral cathedral!');
     }
 
     spawnPhinox() {
@@ -5807,7 +6035,7 @@ class Game {
                 const radius = 30 + Math.random() * 30;
                 const rx = this.player.position.x + Math.cos(angle) * radius;
                 const rz = this.player.position.z + Math.sin(angle) * radius;
-                this.spawnPigmanAt(rx, rz);
+                this.spawnpiggronAt(rx, rz);
             }
         }
         
@@ -5965,6 +6193,7 @@ class Game {
                     this.gameMusic.pause();
                     this.gameMusic.currentTime = 0;
                     this.gameMusic.src = 'Hells Kingdom.ogg';
+                    this._currentMusicTrack = 'Hells Kingdom.ogg';
                     setTimeout(() => {
                         this.gameMusic.play().catch(e => console.log('Fairia music play failed:', e));
                     }, 100);
@@ -5988,6 +6217,7 @@ class Game {
                     this.gameMusic.pause();
                     this.gameMusic.currentTime = 0;
                     this.gameMusic.src = 'Posey.ogg';
+                    this._currentMusicTrack = 'Posey.ogg';
                     setTimeout(() => {
                         this.gameMusic.play().catch(e => console.log('Default music play failed:', e));
                     }, 100);
@@ -6152,10 +6382,10 @@ class Game {
                 // Don't destroy block if chest or candle UI is open
                 if (this.openChestPos || this.opencandlePos) return;
                 
-                // In survival mode, try to attack pigman first
+                // In survival mode, try to attack piggron first
                 if (this.survivalMode) {
-                    const attacked = this.attackPigman();
-                    if (!attacked) this.destroyBlock(); // If no pigman hit, destroy block
+                    const attacked = this.attackpiggron();
+                    if (!attacked) this.destroyBlock(); // If no piggron hit, destroy block
                 } else {
                     this.destroyBlock(); // Normal mode: just destroy block
                 }
@@ -6500,7 +6730,7 @@ class Game {
         if (gamepad.buttons[7] && gamepad.buttons[7].pressed && !this.gamepadState.buttonsPressed[7]) {
             if (!this.openChestPos && !this.opencandlePos) {
                 if (this.survivalMode) {
-                    const attacked = this.attackPigman();
+                    const attacked = this.attackpiggron();
                     if (!attacked) this.destroyBlock();
                 } else {
                     this.destroyBlock();
@@ -6688,6 +6918,26 @@ class Game {
     }
 
     performBlockDestruction(hit) {
+        // TNT uses a fuse: flash for 5s, then explode.
+        if (hit.blockType === this.TNT_TYPE) {
+            this.primeTNT(hit.x, hit.y, hit.z, 5000);
+            this.setCrosshairProgress(0);
+            return;
+        }
+
+        // Remove any Man Poster paintings whose backing block is the one being destroyed
+        if (this.paintings && this.paintings.length > 0) {
+            this.paintings = this.paintings.filter(p => {
+                if (p.backX === hit.x && p.backY === hit.y && p.backZ === hit.z) {
+                    this.scene.remove(p.mesh);
+                    if (p.mesh.geometry) p.mesh.geometry.dispose();
+                    if (p.mesh.material) p.mesh.material.dispose();
+                    return false;
+                }
+                return true;
+            });
+        }
+
         // Remove torch light if destroying a torch (type 25)
         if (hit.blockType === 25) {
             const lightKey = `${hit.x},${hit.y},${hit.z}`;
@@ -6799,7 +7049,136 @@ class Game {
         }
     }
 
-    attackPigman() {
+    primeTNT(x, y, z, fuseMs = 5000) {
+        const key = `${x},${y},${z}`;
+        if (this.primedTNT.has(key)) return;
+        if (this.world.getBlock(x, y, z) !== this.TNT_TYPE) return;
+
+        const flashMesh = new THREE.Mesh(
+            new THREE.BoxGeometry(1.03, 1.03, 1.03),
+            new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })
+        );
+        flashMesh.position.set(x + 0.5, y + 0.5, z + 0.5);
+        flashMesh.visible = true;
+        this.scene.add(flashMesh);
+
+        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        this.primedTNT.set(key, {
+            x,
+            y,
+            z,
+            fuseMs,
+            explodeAtMs: now + fuseMs,
+            mesh: flashMesh
+        });
+    }
+
+    updatePrimedTNT() {
+        if (!this.primedTNT || this.primedTNT.size === 0) return;
+        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+
+        for (const [key, tnt] of this.primedTNT) {
+            const remaining = tnt.explodeAtMs - now;
+            const blinkPeriod = remaining < 1500 ? 100 : 200;
+            if (tnt.mesh) {
+                tnt.mesh.visible = (Math.floor(now / blinkPeriod) % 2) === 0;
+            }
+
+            if (remaining <= 0) {
+                if (tnt.mesh) {
+                    this.scene.remove(tnt.mesh);
+                    if (tnt.mesh.geometry) tnt.mesh.geometry.dispose();
+                    if (tnt.mesh.material) tnt.mesh.material.dispose();
+                }
+                this.primedTNT.delete(key);
+                this.explodeTNT(tnt.x, tnt.y, tnt.z);
+            }
+        }
+    }
+
+    explodeTNT(x, y, z) {
+        const radius = 3;
+        const radiusSq = radius * radius;
+        const changedChunks = new Set();
+
+        // Play explosion audio, allowing overlaps from chain reactions.
+        try {
+            const boom = this.explosionSound ? this.explosionSound.cloneNode() : new Audio('Explotion.ogg');
+            boom.volume = this.explosionSound ? this.explosionSound.volume : 0.85;
+            boom.play().catch(e => console.log('Explosion sound failed:', e));
+        } catch (e) {
+            console.log('Explosion sound creation failed:', e);
+        }
+
+        for (let dx = -radius; dx <= radius; dx++) {
+            for (let dy = -radius; dy <= radius; dy++) {
+                for (let dz = -radius; dz <= radius; dz++) {
+                    const distSq = dx * dx + dy * dy + dz * dz;
+                    if (distSq > radiusSq) continue;
+
+                    const wx = x + dx;
+                    const wy = y + dy;
+                    const wz = z + dz;
+                    const blockType = this.world.getBlock(wx, wy, wz);
+                    if (blockType === 0) continue;
+
+                    // Chain nearby TNT quickly instead of deleting it immediately.
+                    if (blockType === this.TNT_TYPE && !(wx === x && wy === y && wz === z)) {
+                        this.primeTNT(wx, wy, wz, 1200);
+                        continue;
+                    }
+
+                    this.world.setBlock(wx, wy, wz, 0);
+
+                    if (this.ws && this.ws.readyState === 1) {
+                        try {
+                            this.ws.send(JSON.stringify({
+                                type: 'blockChange',
+                                x: wx,
+                                y: wy,
+                                z: wz,
+                                blockType: 0
+                            }));
+                        } catch {}
+                    }
+
+                    const cx = Math.floor(wx / this.world.chunkSize);
+                    const cz = Math.floor(wz / this.world.chunkSize);
+                    changedChunks.add(`${cx},${cz}`);
+                }
+            }
+        }
+
+        for (const chunkKey of changedChunks) {
+            const [cxStr, czStr] = chunkKey.split(',');
+            const cx = parseInt(cxStr, 10);
+            const cz = parseInt(czStr, 10);
+            for (let ox = -1; ox <= 1; ox++) {
+                for (let oz = -1; oz <= 1; oz++) {
+                    this.queueChunkMeshUpdate(cx + ox, cz + oz);
+                }
+            }
+        }
+
+        if (this.survivalMode && this.player && !this.player.isDead) {
+            const blastCenter = new THREE.Vector3(x + 0.5, y + 0.5, z + 0.5);
+            const toPlayer = this.player.position.clone().sub(blastCenter);
+            const dist = toPlayer.length();
+            const damageRange = radius + 2;
+            if (dist < damageRange) {
+                const dmg = Math.max(2, Math.ceil((damageRange - dist) * 2.5));
+                this.player.takeDamage(dmg, null);
+                this.updateHealthBar();
+
+                if (dist > 0.001) {
+                    toPlayer.normalize();
+                    this.player.velocity.add(toPlayer.multiplyScalar(0.18));
+                }
+            }
+        }
+    }
+
+    attackpiggron() {
         if (!this.pigmen || this.pigmen.length === 0) return false;
 
         const camera = this.player.getCamera();
@@ -6809,27 +7188,27 @@ class Game {
         const attackRange = 4; // Attack range
         const attackDamage = this.player.getAttackDamage(); // Get damage from equipped weapon
         
-        let closestPigman = null;
+        let closestpiggron = null;
         let closestDistance = attackRange;
         let closestSlime = null;
         let closestSlimeDistance = attackRange;
 
-        // Find the closest pigman in front of the player
+        // Find the closest piggron in front of the player
         for (const pig of this.pigmen) {
             if (pig.isDead) continue;
 
-            const toPigman = pig.position.clone().sub(camera.position);
-            const distance = toPigman.length();
+            const topiggron = pig.position.clone().sub(camera.position);
+            const distance = topiggron.length();
 
-            // Check if pigman is within range
+            // Check if piggron is within range
             if (distance > attackRange) continue;
 
-            // Check if pigman is roughly in the direction player is looking
-            toPigman.normalize();
-            const dot = direction.dot(toPigman);
+            // Check if piggron is roughly in the direction player is looking
+            topiggron.normalize();
+            const dot = direction.dot(topiggron);
             
             if (dot > 0.7 && distance < closestDistance) { // 0.7 = ~45 degree cone
-                closestPigman = pig;
+                closestpiggron = pig;
                 closestDistance = distance;
             }
         }
@@ -6850,17 +7229,17 @@ class Game {
             }
         }
 
-        // Check for Pigman Priest boss
+        // Check for piggron Priest boss
         let closestPriest = null;
         let closestPriestDistance = attackRange;
-        if (this.pigmanPriest && !this.pigmanPriest.isDead) {
-            const toPriest = this.pigmanPriest.position.clone().sub(camera.position);
+        if (this.piggronPriest && !this.piggronPriest.isDead) {
+            const toPriest = this.piggronPriest.position.clone().sub(camera.position);
             const distance = toPriest.length();
             if (distance <= attackRange) {
                 toPriest.normalize();
                 const dot = direction.dot(toPriest);
                 if (dot > 0.7) {
-                    closestPriest = this.pigmanPriest;
+                    closestPriest = this.piggronPriest;
                     closestPriestDistance = distance;
                 }
             }
@@ -6888,8 +7267,8 @@ class Game {
         }
 
         // Attack whichever is closer (prioritize boss)
-        if (closestPriest && (!closestMinutor || closestPriestDistance < closestMinutorDistance) && (!closestPigman || closestPriestDistance < closestDistance) && (!closestSlime || closestPriestDistance < closestSlimeDistance)) {
-            // Attack Pigman Priest Boss
+        if (closestPriest && (!closestMinutor || closestPriestDistance < closestMinutorDistance) && (!closestpiggron || closestPriestDistance < closestDistance) && (!closestSlime || closestPriestDistance < closestSlimeDistance)) {
+            // Attack piggron Priest Boss
             const knockbackDir = closestPriest.position.clone()
                 .sub(this.player.position)
                 .normalize();
@@ -6904,19 +7283,19 @@ class Game {
                     // Drop golden sword and multiple pork
                     this.itemManager.dropItem(dropPos, 32, 1); // Golden sword
                     this.itemManager.dropItem(dropPos.clone().add(new THREE.Vector3(0.5, 0, 0)), 17, 10); // 10 pork
-                    console.log('Pigman Priest defeated! Dropped golden sword and pork!');
+                    console.log('piggron Priest defeated! Dropped golden sword and pork!');
                 }
                 
                 // Remove dead priest
                 if (closestPriest.mesh) {
                     this.scene.remove(closestPriest.mesh);
                 }
-                this.pigmanPriest = null;
+                this.piggronPriest = null;
             }
             return true;
         }
 
-        if (closestMinutor && (!closestPigman || closestMinutorDistance < closestDistance) && (!closestSlime || closestMinutorDistance < closestSlimeDistance)) {
+        if (closestMinutor && (!closestpiggron || closestMinutorDistance < closestDistance) && (!closestSlime || closestMinutorDistance < closestSlimeDistance)) {
             // Attack Minutor
             const knockbackDir = closestMinutor.position.clone()
                 .sub(this.player.position)
@@ -6945,33 +7324,33 @@ class Game {
             return true;
         }
 
-        if (closestPigman) {
+        if (closestpiggron) {
             // Calculate knockback direction (away from player)
-            const knockbackDir = closestPigman.position.clone()
+            const knockbackDir = closestpiggron.position.clone()
                 .sub(this.player.position)
                 .normalize();
             knockbackDir.y = 0; // Keep knockback horizontal
             
-            const died = closestPigman.takeDamage(attackDamage, knockbackDir);
+            const died = closestpiggron.takeDamage(attackDamage, knockbackDir);
             if (died) {
-                // Drop pork item at pigman location
+                // Drop pork item at piggron location
                 if (this.itemManager) {
-                    const dropPos = closestPigman.position.clone();
+                    const dropPos = closestpiggron.position.clone();
                     dropPos.y += 0.5; // Drop slightly above ground
                     this.itemManager.dropItem(dropPos, 17, 3); // Drop 3 pork (type 17)
-                    console.log('Pigman dropped 3 pork!');
+                    console.log('piggron dropped 3 pork!');
                     // small chance to drop a musket
                     if (Math.random() < 0.05) {
                         this.itemManager.dropItem(dropPos.clone().add(new THREE.Vector3(0.2,0,0)), this.MUSKET_TYPE, 1);
-                        console.log('Pigman also dropped a musket!');
+                        console.log('piggron also dropped a musket!');
                     }
                 }
                 
-                // Remove dead pigman
-                if (closestPigman.mesh) {
-                    this.scene.remove(closestPigman.mesh);
+                // Remove dead piggron
+                if (closestpiggron.mesh) {
+                    this.scene.remove(closestpiggron.mesh);
                 }
-                const index = this.pigmen.indexOf(closestPigman);
+                const index = this.pigmen.indexOf(closestpiggron);
                 if (index > -1) {
                     this.pigmen.splice(index, 1);
                 }
@@ -6995,7 +7374,7 @@ class Game {
             }
             return true;
         }
-        return false; // No pigman hit
+        return false; // No piggron hit
     }
 
     // Convenience wrapper so Game consumers can query the world.
@@ -7036,6 +7415,55 @@ class Game {
         this.projectiles.push(proj);
     }
 
+    // Place a Man Poster painting flat against the wall face the player is looking at.
+    // hit  - the return value from raycastBlock()
+    placePainting(hit) {
+        if (!hit) return;
+
+        const dx = hit.placeX - hit.x;
+        const dy = hit.placeY - hit.y;
+        const dz = hit.placeZ - hit.z;
+
+        // Only allow wall faces (not floor/ceiling)
+        if (dy !== 0 || (dx === 0 && dz === 0)) {
+            console.log('Man Poster can only be placed on a vertical wall face');
+            return;
+        }
+
+        const OFFSET = 0.03; // push slightly off the wall to prevent z-fighting
+        let posX, posY, posZ, rotY;
+
+        if (dx !== 0) {
+            // Face on the X axis
+            posX = hit.x + (dx > 0 ? 1 : 0) + dx * OFFSET;
+            posY = hit.y + 1; // center of 2-block-tall painting
+            posZ = hit.z + 0.5;
+            rotY = dx > 0 ? Math.PI / 2 : -Math.PI / 2;
+        } else {
+            // Face on the Z axis
+            posX = hit.x + 0.5;
+            posY = hit.y + 1;
+            posZ = hit.z + (dz > 0 ? 1 : 0) + dz * OFFSET;
+            rotY = dz > 0 ? 0 : Math.PI;
+        }
+
+        const geo = new THREE.PlaneGeometry(1, 2);
+        const tex = this.manPosterTexture;
+        const mat = new THREE.MeshLambertMaterial({
+            map: tex || null,
+            color: tex ? 0xffffff : 0xc8a87a,
+            side: THREE.DoubleSide
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(posX, posY, posZ);
+        mesh.rotation.y = rotY;
+        this.scene.add(mesh);
+
+        // Record backing block so painting is removed if the wall is broken
+        this.paintings.push({ mesh, backX: hit.x, backY: hit.y, backZ: hit.z });
+        console.log(`Placed Man Poster at (${posX.toFixed(2)}, ${posY.toFixed(2)}, ${posZ.toFixed(2)})`);
+    }
+
     placeBlock() {
         // musket override
         if (this.player.selectedBlock === this.MUSKET_TYPE) {
@@ -7044,6 +7472,12 @@ class Game {
         }
         const hit = this.raycastBlock();
         if (hit) {
+            // Man Poster: place as a flat painting mesh, not a voxel block
+            if (this.player.selectedBlock === this.MAN_POSTER_TYPE) {
+                this.placePainting(hit);
+                return;
+            }
+
             // Open chest UI if clicking on a chest
             if (hit.blockType === 26) {
                 this.openChest(hit.x, hit.y, hit.z);
@@ -7373,6 +7807,14 @@ class Game {
         const pos = this.player.position;
         document.getElementById('fps').textContent = this.fps;
         document.getElementById('pos').textContent = `${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}`;
+
+        // Dedicated coordinates HUD
+        const hudX = document.getElementById('hud-x');
+        const hudY = document.getElementById('hud-y');
+        const hudZ = document.getElementById('hud-z');
+        if (hudX) hudX.textContent = Math.floor(pos.x);
+        if (hudY) hudY.textContent = Math.floor(pos.y);
+        if (hudZ) hudZ.textContent = Math.floor(pos.z);
         
         const cx = Math.floor(pos.x / this.world.chunkSize);
         const cz = Math.floor(pos.z / this.world.chunkSize);
@@ -7474,7 +7916,7 @@ class Game {
 
         const equipGrid = document.createElement('div');
         equipGrid.style.display = 'grid';
-        equipGrid.style.gridTemplateColumns = 'repeat(3, 60px)';
+        equipGrid.style.gridTemplateColumns = 'repeat(7, 60px)';
         equipGrid.style.gridGap = '8px';
 
         const equipSlots = [
@@ -7484,7 +7926,14 @@ class Game {
             { key: 'boots', label: 'Boots' },
             { key: 'mainHand', label: 'Main' },
             { key: 'offHand', label: 'Off' },
-            { key: 'tool', label: 'Tool' }
+            { key: 'tool', label: 'Tool' },
+            { key: 'accessory1', label: 'Acc1' },
+            { key: 'accessory2', label: 'Acc2' },
+            { key: 'accessory3', label: 'Acc3' },
+            { key: 'accessory4', label: 'Acc4' },
+            { key: 'accessory5', label: 'Acc5' },
+            { key: 'accessory6', label: 'Acc6' },
+            { key: 'accessory7', label: 'Acc7' }
         ];
 
         equipSlots.forEach(({ key, label }) => {
@@ -7646,7 +8095,8 @@ class Game {
                 { inputs: { 3: 1, 13: 1 }, result: 30, resultAmount: 1, name: '1 Stone + 1 Plank → 1 Chisel' },
                 { inputs: { 1: 5 }, result: 31, resultAmount: 1, name: '5 Dirt → 1 Cloud Pillow' },
                 // musket recipe: 2 planks + 5 coal + 3 stone
-                { inputs: { 13: 2, 24: 5, 3: 3 }, result: this.MUSKET_TYPE, resultAmount: 1, name: '2 Planks + 5 Coal + 3 Stone → Musket' }
+                { inputs: { 13: 2, 24: 5, 3: 3 }, result: this.MUSKET_TYPE, resultAmount: 1, name: '2 Planks + 5 Coal + 3 Stone → Musket' },
+                { inputs: { 14: 2, 24: 1 }, result: this.MAP_TYPE, resultAmount: 1, name: '2 Paper + 1 Coal → Map' }
             ];
 
             // Create recipe list
@@ -8896,7 +9346,7 @@ class Game {
         // `isBlockPlaceable`.
         const blockTypes = Object.keys(this.blockNames)
             .map(Number)
-            .filter(t => t > 0 && (this.world.isBlockPlaceable(t) || t === this.MUSKET_TYPE))
+            .filter(t => t > 0)
             .sort((a, b) => a - b);
 
         blockTypes.forEach(blockType => {
@@ -9061,12 +9511,12 @@ class Game {
             return btn;
         };
 
-        // Spawn Pigman near player
-        grid.appendChild(makeBtn('Spawn Pigman (near player)', () => {
+        // Spawn piggron near player
+        grid.appendChild(makeBtn('Spawn piggron (near player)', () => {
             const px = this.player.position.x;
             const pz = this.player.position.z;
-            const pig = this.spawnPigmanAt(px, pz);
-            if (!pig) console.log('Pigman spawn failed (invalid surface?)');
+            const pig = this.spawnpiggronAt(px, pz);
+            if (!pig) console.log('piggron spawn failed (invalid surface?)');
         }));
 
         // Spawn Slime near player (use terrain height)
@@ -9089,9 +9539,9 @@ class Game {
             if (!m) console.log('Minotaur spawn failed');
         }));
 
-        // Spawn Pigman Priest (uses predefined location)
-        grid.appendChild(makeBtn('Spawn Pigman Priest (cathedral)', () => {
-            this.spawnPigmanPriest();
+        // Spawn piggron Priest (uses predefined location)
+        grid.appendChild(makeBtn('Spawn piggron Priest (cathedral)', () => {
+            this.spawnpiggronPriest();
         }));
 
         // Optional: Despawn all pigmen/minotaurs
@@ -9116,9 +9566,9 @@ class Game {
                 this.minutors = [];
             }
             // Remove priest
-            if (this.pigmanPriest && this.pigmanPriest.mesh && this.scene) {
-                this.scene.remove(this.pigmanPriest.mesh);
-                this.pigmanPriest = null;
+            if (this.piggronPriest && this.piggronPriest.mesh && this.scene) {
+                this.scene.remove(this.piggronPriest.mesh);
+                this.piggronPriest = null;
             }
             console.log('All mobs despawned');
         }));
@@ -10063,6 +10513,39 @@ class Game {
         }
         this.scene.background = skyColor;
         this.scene.fog.color = fogColor;
+
+        // Day/night music: Posey.ogg during the day, campfire tales.ogg at night
+        if (!this.inAstralDimension && !(this.world && this.world.worldType === 'fairia')) {
+            const isNight = time >= 0.75 || time < 0.25;
+            const wantTrack = isNight ? 'Campfire Tales.ogg' : 'Posey.ogg';
+            if (this._currentMusicTrack !== wantTrack) {
+                this._currentMusicTrack = wantTrack;
+                this.gameMusic.pause();
+                this.gameMusic.currentTime = 0;
+                this.gameMusic.src = wantTrack;
+                this.gameMusic.play().catch(e => console.log('Music play failed:', e));
+            }
+        }
+    }
+
+    forceUnlockAudio() {
+        this.audioUnlocked = true;
+        this.gameMusic.muted = false;
+        if (this.gameMusic.volume < 0.65) this.gameMusic.volume = 0.65;
+        this.gameMusic.play().catch(e => console.log('forceUnlockAudio play failed:', e));
+    }
+
+    ensureAudioRunning() {
+        if (!this.audioUnlocked || !this.gameMusic) return;
+        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        if (now - this.lastAudioEnsureTime < 2500) return;
+        this.lastAudioEnsureTime = now;
+
+        if (this.gameMusic.muted) this.gameMusic.muted = false;
+        if (this.gameMusic.volume < 0.65) this.gameMusic.volume = 0.65;
+        if (this.gameMusic.paused && !this.pauseMenuOpen) {
+            this.gameMusic.play().catch(e => console.log('ensureAudioRunning play failed:', e));
+        }
     }
 
     hasCloudPillowEquipped() {
@@ -10074,6 +10557,125 @@ class Game {
     isNightTime() {
         const t = this.dayTime;
         return t >= 0.75 || t < 0.25;
+    }
+
+    isMapEquipped() {
+        if (!this.player || !this.player.equipment) return false;
+        const equip = this.player.equipment;
+        for (let i = 1; i <= 7; i++) {
+            const slot = equip[`accessory${i}`];
+            const type = slot && typeof slot === 'object' ? slot.type : slot;
+            if (type === this.MAP_TYPE) return true;
+        }
+        return false;
+    }
+
+    updateMinimap() {
+        if (!this._minimapEl || !this._minimapCanvas || !this.player || !this.world) return;
+
+        const equipped = this.isMapEquipped();
+        this._minimapEl.style.display = equipped ? 'block' : 'none';
+        if (!equipped) return;
+
+        const canvas = this._minimapCanvas;
+        const ctx = canvas.getContext('2d');
+        const W = canvas.width;
+        const H = canvas.height;
+        const halfW = W >> 1;
+        const halfH = H >> 1;
+        const chunkSize = this.world.chunkSize || 16;
+        const waterLevel = this.world.waterLevel || 44;
+
+        // Square minimap in chunk cells (box-shape discovered map)
+        const cellsAcross = 25;
+        const cellPx = Math.floor(W / cellsAcross);
+        const halfCells = Math.floor(cellsAcross / 2);
+        const pcx = Math.floor(this.player.position.x / chunkSize);
+        const pcz = Math.floor(this.player.position.z / chunkSize);
+
+        const dimensionKey = this.inAstralDimension ? 'astral' : ((this.world && this.world.worldType === 'fairia') ? 'fairia' : 'default');
+        if (!this.discoveredChunks) this.discoveredChunks = { default: new Set(), fairia: new Set(), astral: new Set() };
+        const discovered = this.discoveredChunks[dimensionKey] || (this.discoveredChunks[dimensionKey] = new Set());
+
+        // Mark currently loaded chunks as discovered land
+        if (this.world.chunks) {
+            for (const key of this.world.chunks.keys()) discovered.add(key);
+        }
+        discovered.add(`${pcx},${pcz}`);
+
+        // Background + border
+        ctx.fillStyle = '#0f1014';
+        ctx.fillRect(0, 0, W, H);
+        ctx.strokeStyle = '#2b2f3a';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+
+        for (let dz = -halfCells; dz <= halfCells; dz++) {
+            for (let dx = -halfCells; dx <= halfCells; dx++) {
+                const cx = pcx + dx;
+                const cz = pcz + dz;
+                const key = `${cx},${cz}`;
+
+                const sx = (dx + halfCells) * cellPx;
+                const sy = (dz + halfCells) * cellPx;
+
+                if (!discovered.has(key)) {
+                    ctx.fillStyle = '#151821';
+                    ctx.fillRect(sx, sy, cellPx, cellPx);
+                    continue;
+                }
+
+                const wx = cx * chunkSize + Math.floor(chunkSize / 2);
+                const wz = cz * chunkSize + Math.floor(chunkSize / 2);
+                const terrainH = this.world.getTerrainHeight(wx, wz);
+                const biome = this.world.getBiome ? this.world.getBiome(wx, wz) : 'forest';
+
+                let color = '#2f7a36';
+                if (terrainH <= waterLevel) {
+                    color = '#2a5fbf';
+                } else if (biome === 'desert') {
+                    color = '#c2b280';
+                } else if (biome === 'snowy_forest') {
+                    color = '#d6e6f4';
+                } else if (biome === 'fairia') {
+                    color = '#8b2a2a';
+                }
+
+                ctx.fillStyle = color;
+                ctx.fillRect(sx, sy, cellPx, cellPx);
+            }
+        }
+
+        // Player marker and facing arrow at center
+        ctx.save();
+        ctx.translate(halfW, halfH);
+        ctx.fillStyle = '#ffe600';
+        ctx.beginPath();
+        ctx.arc(0, 0, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        const arrowLen = 10;
+        const angle = this.player.yaw;
+        ctx.moveTo(0, 0);
+        ctx.lineTo(Math.sin(angle) * arrowLen, -Math.cos(angle) * arrowLen);
+        ctx.stroke();
+        ctx.restore();
+
+        // Compass labels
+        ctx.save();
+        ctx.fillStyle = 'rgba(255,255,255,0.65)';
+        ctx.font = 'bold 9px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('N', halfW, 10);
+        ctx.fillText('S', halfW, H - 2);
+        ctx.textAlign = 'left';
+        ctx.fillText('W', 2, halfH + 4);
+        ctx.textAlign = 'right';
+        ctx.fillText('E', W - 2, halfH + 4);
+        ctx.restore();
     }
 
     clearChunkMeshes() {
@@ -10196,7 +10798,7 @@ class Game {
         // Spawn pigmen and priest boss in the astral cathedral after chunks load
         setTimeout(() => {
             this.spawnAstralPigmen(8);
-            this.spawnPigmanPriest();
+            this.spawnpiggronPriest();
         }, 500);
         
         console.log('Entered astral dimension');
@@ -10258,6 +10860,12 @@ class Game {
             
             // Update day/night cycle
             this.updateDayNightCycle(deltaTime);
+            this.updatePrimedTNT();
+            this.ensureAudioRunning();
+
+            // Update minimap (every 20 frames)
+            this._minimapFrame = (this._minimapFrame || 0) + 1;
+            if (this._minimapFrame % 20 === 0) this.updateMinimap();
             
             // Update player
             this.player.update(this.world, deltaTime);
@@ -10268,8 +10876,8 @@ class Game {
             this.updateSlimes(deltaTime);
             // Refresh mob population - despawn far ones, spawn near ones
             this.refreshMobPopulation();
-            if (this.pigmanPriest && !this.pigmanPriest.isDead) {
-                this.pigmanPriest.update(this.world, this.player, deltaTime);
+            if (this.piggronPriest && !this.piggronPriest.isDead) {
+                this.piggronPriest.update(this.world, this.player, deltaTime);
             }
             this.updateMinutors(deltaTime);
             
@@ -11076,6 +11684,7 @@ window.addEventListener('load', () => {
                     document.body.removeChild(menu);
                     const game = new Game('default', false, 'red', playerName);
                     window._game = game;
+                    game.forceUnlockAudio();
                     game.connectServer(server.host, server.port, pw);
                 });
                 serverDiv.appendChild(joinBtn);
@@ -11161,6 +11770,7 @@ window.addEventListener('load', () => {
         document.body.removeChild(menu);
         const game = new Game('default', false, 'red', playerName);
         window._game = game;
+        game.forceUnlockAudio();
         game.connectServer(host, port, pw);
     });
     btnContainer.appendChild(joinServerBtn);
@@ -11616,6 +12226,7 @@ window.addEventListener('load', () => {
             const survivalMode = data.survivalMode || false;
             const game = new Game(data.worldType || 'default', false, 'red', playerName, survivalMode);
             window._game = game;
+            game.forceUnlockAudio();
 
             // Restore player state
             if (data.playerPosition) {
@@ -11724,6 +12335,7 @@ window.addEventListener('load', () => {
             const game = new Game(worldType, isMultiplayer, team, playerName, survivalMode, playerColor, playerEmail);
             // Expose for UI Connect button
             window._game = game;
+            game.forceUnlockAudio();
             
             // Auto-connect to server if enabled
             if (useServer) {
